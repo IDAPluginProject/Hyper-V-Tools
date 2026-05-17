@@ -26,6 +26,7 @@
 #   v1.6.0 - External configuration (JSON + Registry).
 #   v2.0.0 - Rewrite: self-contained examples, removed abstraction layers,
 #            fixed bugs, consistent handle management, clean entry point.
+#   v2.1.0 - Section 14: Hypercall operations (HvCallReadGpa, HvCallWriteGpa).
 # ==============================================================================
 
 #requires -Version 7.0
@@ -94,7 +95,7 @@ function Get-HvlibConfig {
 }
 
 # Hardcoded defaults (used when JSON and Registry have no values)
-$script:DEFAULT_DLL_PATH = "C:\LiveCloudKd_release\hvlibdotnet.dll"
+$script:DEFAULT_DLL_PATH = "C:\Distr\LiveCloudKd_public\hvlibdotnet.dll"
 $script:DEFAULT_VM_NAME  = "Windows Server 2025"
 
 # Module version must match Hvlib.psd1 ModuleVersion
@@ -2001,6 +2002,396 @@ function Example-GetHvlibSymbolTableLength {
 #endregion
 
 # ==============================================================================
+#region Section 14: Hypercall Operations (v1.5.0)
+# ==============================================================================
+
+# Load typed hypercall wrappers from Hvlib.Hypercalls module
+# Provides: Invoke-HypercallRaw (generic), Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, etc.
+$_hvlibBase = Split-Path (Get-Module Hvlib).Path
+Import-Module (Join-Path $_hvlibBase 'Hvlib.Hypercalls.psd1') -Force -ErrorAction SilentlyContinue
+Remove-Variable _hvlibBase
+if (-not (Get-Command Invoke-HvCallReadGpa -ErrorAction SilentlyContinue)) {
+    Write-Warning "Hvlib.Hypercalls module not found. Section 14 hypercall wrappers unavailable."
+}
+
+# --- REMOVED: Invoke-HypercallRaw, Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, etc.
+# --- These functions are now in Hvlib.Hypercalls.psm1 module.
+# --- See: C:\Program Files\WindowsPowerShell\Modules\Hvlib\Hvlib.Hypercalls.psm1
+
+
+function Example-InvokeHypercall-ReadGpa {
+    <#
+    .SYNOPSIS
+    Read guest physical memory via HvCallReadGpa (0x0053) — typed vs generic comparison.
+    .DESCRIPTION
+    Demonstrates two ways to execute the same HvCallReadGpa hypercall:
+
+    Method A — Typed wrapper (known hypercall interface):
+      Invoke-HvCallReadGpa — named parameters, parsed output (AccessResult, Data).
+      Use when the hypercall is known and has a typed wrapper in Hvlib.Hypercalls.
+
+    Method B — Generic interface (unknown hypercall):
+      Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa — manual input struct serialization,
+      raw byte[] output. Use for any hypercall, including undocumented ones.
+
+    Both methods go through the same execution path:
+      PowerShell → InvokeHypercallBytes (C#) → SdkInvokeHypercall → hvmm.sys → vmcall
+
+    HV_INPUT_READ_GPA layout (32 bytes):
+      Offset 0:  UInt64  PartitionId
+      Offset 8:  UInt32  VpIndex
+      Offset 12: UInt32  ByteCount (max 16)
+      Offset 16: UInt64  BaseGpa
+      Offset 24: UInt64  ControlFlags
+
+    HV_OUTPUT_READ_GPA layout (24 bytes):
+      Offset 0:  UInt64  AccessResult (0 = success)
+      Offset 8:  Byte[16] Data
+    .PARAMETER VmName
+    Target virtual machine name.
+    .OUTPUTS
+    [PSCustomObject] with typed/generic results and match status.
+    .EXAMPLE
+    . .\Hvlib-Examples.ps1
+    Example-InvokeHypercall-ReadGpa -VmName "Windows Server 2025"
+    #>
+    param([string]$VmName = $script:VmName)
+
+    Write-Host "`n=== 14.1: HvCallReadGpa (0x0053) — Typed vs Generic ===" -ForegroundColor Cyan
+
+    $handle = Get-HvlibPartition -VmName $VmName
+    if (-not $handle -or $handle -eq 0) { Write-Warning "VM '$VmName' not found"; return $null }
+
+    $IC = [Hvlibdotnet.Hvlib+HVDD_INFORMATION_CLASS]
+
+    # Get partition ID and kernel base for VA→PA translation
+    $partitionId = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddPartitionId
+    $kernelBase  = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddKernelBase
+    Write-Host ("  PartitionId : {0}" -f $partitionId)
+    Write-Host ("  KernelBase  : 0x{0:X}" -f $kernelBase)
+
+    # Resolve a symbol to get a known virtual address
+    $symName = "nt!MmCopyVirtualMemory"
+    $symVA = Get-HvlibSymbolAddressDirect $handle $symName
+    if (-not $symVA -or $symVA -eq 0) {
+        Write-Warning "Symbol '$symName' not found, trying nt!KeBugCheckEx"
+        $symName = "nt!KeBugCheckEx"
+        $symVA = Get-HvlibSymbolAddressDirect $handle $symName
+    }
+
+    if (-not $symVA -or $symVA -eq 0) {
+        Write-Warning "No symbol resolved — cannot demonstrate HvCallReadGpa"
+        Close-HvlibPartition -handle $handle
+        return $null
+    }
+
+    Write-Host ("  Symbol      : {0} = 0x{1:X}" -f $symName, $symVA)
+
+    # Translate VA → PA via Hvlib
+    $physAddr = Get-HvlibPhysicalAddress -PartitionHandle $handle -VirtualAddress $symVA
+    if (-not $physAddr -or $physAddr -eq 0) {
+        Write-Warning "VA→PA translation failed"
+        Close-HvlibPartition -handle $handle
+        return $null
+    }
+    Write-Host ("  PhysAddress : 0x{0:X}" -f $physAddr) -ForegroundColor Green
+
+    $bytesToRead = 16
+
+    # ---------------------------------------------------------------
+    # Method A: Typed wrapper (known hypercall)
+    #   Invoke-HvCallReadGpa — named parameters, parsed PSCustomObject output.
+    #   Internally calls: Invoke-HypercallRaw → InvokeHypercallBytes (C#) → SdkInvokeHypercall
+    # ---------------------------------------------------------------
+    Write-Host ""
+    Write-Host "  [A] Typed wrapper: Invoke-HvCallReadGpa" -ForegroundColor Yellow
+    $typed = Invoke-HvCallReadGpa -PartitionId $partitionId -BaseGpa $physAddr -ByteCount $bytesToRead
+
+    $typedColor = if ($typed.Ok -and $typed.AccessResult -eq 0) { "Green" } else { "Red" }
+    $hexTyped = ($typed.Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    Write-Host ("      Ok={0}, AccessResult=0x{1:X}" -f $typed.Ok, $typed.AccessResult) -ForegroundColor $typedColor
+    Write-Host ("      Data: {0}" -f $hexTyped) -ForegroundColor $typedColor
+
+    # ---------------------------------------------------------------
+    # Method B: Generic interface (unknown hypercall)
+    #   Invoke-HypercallRaw — manual struct layout via [ordered]@{}, raw byte[] output.
+    #   Same execution path, but caller must know the TLFS struct layout.
+    #   Use for undocumented or new hypercalls without typed wrappers.
+    # ---------------------------------------------------------------
+    Write-Host ""
+    Write-Host "  [B] Generic interface: Invoke-HypercallRaw -CallCode $($HvCallCode.HvCallReadGpa) (ReadGpa)" -ForegroundColor Yellow
+    $generic = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$partitionId
+        VpIndex      = [uint32]0
+        ByteCount    = [uint32]$bytesToRead
+        BaseGpa      = [uint64]$physAddr
+        ControlFlags = [uint64]0
+    }) -OutputSize 24
+
+    $genAccessResult = [BitConverter]::ToUInt64($generic.OutputBytes, 0)
+    $genData = [byte[]]$generic.OutputBytes[8..(8 + $bytesToRead - 1)]
+    $hexGeneric = ($genData | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    $genColor = if ($generic.Ok -and $genAccessResult -eq 0) { "Green" } else { "Red" }
+    Write-Host ("      Ok={0}, AccessResult=0x{1:X}" -f $generic.Ok, $genAccessResult) -ForegroundColor $genColor
+    Write-Host ("      Data: {0}" -f $hexGeneric) -ForegroundColor $genColor
+
+    # ---------------------------------------------------------------
+    # Cross-check with SdkReadPhysicalMemory / SdkReadVirtualMemory
+    # ---------------------------------------------------------------
+    Write-Host ""
+    Write-Host "  Cross-check with SDK methods:" -ForegroundColor Cyan
+
+    $physBytes = Get-HvlibVmPhysicalMemory -prtnHandle $handle -start_position $physAddr -size $bytesToRead
+    $hexPhys = ""
+    if ($physBytes) {
+        $physSlice = [byte[]]$physBytes[0..($bytesToRead - 1)]
+        $hexPhys = ($physSlice | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    }
+
+    $virtBytes = Get-HvlibVmVirtualMemory -prtnHandle $handle -start_position $symVA -size $bytesToRead
+    $hexVirt = ""
+    if ($virtBytes) {
+        $virtSlice = [byte[]]$virtBytes[0..($bytesToRead - 1)]
+        $hexVirt = ($virtSlice | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    }
+
+    # Comparison
+    $matchTypedGeneric = ($hexTyped -eq $hexGeneric)
+    $matchTypedPhys    = ($hexTyped -eq $hexPhys)
+    $matchTypedVirt    = ($hexTyped -eq $hexVirt)
+
+    # Summary table
+    Write-Host ""
+    Write-Host ("  {0,-48} {1}" -f "Method", "Data") -ForegroundColor Cyan
+    Write-Host ("  " + '-' * 80)
+    Write-Host ("  {0,-48} {1}" -f "[A] Invoke-HvCallReadGpa (typed)",     $hexTyped) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "[B] Invoke-HypercallRaw $($HvCallCode.HvCallReadGpa) (generic)", $hexGeneric) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "SdkReadPhysicalMemory",                $hexPhys)
+    Write-Host ("  {0,-48} {1}" -f "SdkReadVirtualMemory (VA 0x$($symVA.ToString('X')))", $hexVirt)
+    Write-Host ""
+    Write-Host ("  Typed == Generic                : {0}" -f $matchTypedGeneric) -ForegroundColor $(if ($matchTypedGeneric) { "Green" } else { "Red" })
+    Write-Host ("  Typed == SdkReadPhysicalMemory  : {0}" -f $matchTypedPhys)    -ForegroundColor $(if ($matchTypedPhys)    { "Green" } else { "Red" })
+    Write-Host ("  Typed == SdkReadVirtualMemory   : {0}" -f $matchTypedVirt)    -ForegroundColor $(if ($matchTypedVirt)    { "Green" } else { "Red" })
+
+    $result = [PSCustomObject]@{
+        Symbol             = $symName
+        VirtualAddr        = "0x$($symVA.ToString('X'))"
+        PhysicalAddr       = "0x$($physAddr.ToString('X'))"
+        TypedOk            = $typed.Ok
+        TypedAccessResult  = $typed.AccessResult
+        TypedData          = $hexTyped
+        GenericOk          = $generic.Ok
+        GenericAccessResult = $genAccessResult
+        GenericData        = $hexGeneric
+        SdkPhysData        = $hexPhys
+        SdkVirtData        = $hexVirt
+        MatchTypedGeneric  = $matchTypedGeneric
+        MatchTypedPhys     = $matchTypedPhys
+        MatchTypedVirt     = $matchTypedVirt
+    }
+
+    Close-HvlibPartition -handle $handle
+    return $result
+}
+
+
+function Example-InvokeHypercall-WriteReadGpa {
+    <#
+    .SYNOPSIS
+    Write/read guest physical memory via HvCallWriteGpa/ReadGpa — typed vs generic comparison.
+    .DESCRIPTION
+    Demonstrates a safe write-read round-trip using two methods:
+
+    Method A — Typed wrappers (known hypercall interface):
+      Invoke-HvCallReadGpa + Invoke-HvCallWriteGpa — named parameters, parsed output.
+
+    Method B — Generic interface (unknown hypercall):
+      Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa/$HvCallCode.HvCallWriteGpa — manual TLFS struct serialization.
+
+    Both methods execute the same hypercall through:
+      PowerShell → InvokeHypercallBytes (C#) → SdkInvokeHypercall → hvmm.sys → vmcall
+
+    The test is non-destructive: reads original bytes, writes them back unchanged,
+    then verifies the round-trip.
+
+    HV_INPUT_WRITE_GPA layout (48 bytes):
+      Offset 0:  UInt64  PartitionId
+      Offset 8:  UInt32  VpIndex
+      Offset 12: UInt32  ByteCount (max 16)
+      Offset 16: UInt64  BaseGpa
+      Offset 24: UInt64  ControlFlags
+      Offset 32: Byte[16] Data
+
+    HV_OUTPUT_WRITE_GPA layout (8 bytes):
+      Offset 0:  UInt64  AccessResult (0 = success)
+    .PARAMETER VmName
+    Target virtual machine name.
+    .OUTPUTS
+    [PSCustomObject] with typed/generic round-trip results and match status.
+    .EXAMPLE
+    . .\Hvlib-Examples.ps1
+    Example-InvokeHypercall-WriteReadGpa -VmName "Windows Server 2025"
+    #>
+    param([string]$VmName = $script:VmName)
+
+    Write-Host "`n=== 14.2: HvCallWriteGpa/ReadGpa round-trip — Typed vs Generic ===" -ForegroundColor Cyan
+
+    $handle = Get-HvlibPartition -VmName $VmName
+    if (-not $handle -or $handle -eq 0) { Write-Warning "VM '$VmName' not found"; return $null }
+
+    $IC = [Hvlibdotnet.Hvlib+HVDD_INFORMATION_CLASS]
+
+    $partitionId = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddPartitionId
+    $kernelBase  = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddKernelBase
+
+    # Use kernel PE header checksum as a safe target
+    $checksumVA = $kernelBase + 0x58
+    $physAddr = Get-HvlibPhysicalAddress -PartitionHandle $handle -VirtualAddress $checksumVA
+    if (-not $physAddr -or $physAddr -eq 0) { $physAddr = 0x1000 }
+    Write-Host ("  PartitionId : {0}" -f $partitionId)
+    Write-Host ("  Target GPA  : 0x{0:X}" -f $physAddr)
+
+    $bytesToRW = 8
+
+    # ===============================================================
+    # Method A: Typed wrappers (known hypercall interface)
+    # ===============================================================
+    Write-Host ""
+    Write-Host "  [A] Typed wrappers: Invoke-HvCallReadGpa / Invoke-HvCallWriteGpa" -ForegroundColor Yellow
+
+    # A.1: Read original bytes
+    Write-Host "      Step 1: Invoke-HvCallReadGpa — reading..." -ForegroundColor Cyan
+    $typedRead1 = Invoke-HvCallReadGpa -PartitionId $partitionId -BaseGpa $physAddr -ByteCount $bytesToRW
+    $hexTypedOrig = ($typedRead1.Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    $trColor = if ($typedRead1.Ok -and $typedRead1.AccessResult -eq 0) { "Green" } else { "Red" }
+    Write-Host ("      Read  Ok={0}, AccessResult=0x{1:X}, Data: {2}" -f $typedRead1.Ok, $typedRead1.AccessResult, $hexTypedOrig) -ForegroundColor $trColor
+
+    if (-not $typedRead1.Ok -or $typedRead1.AccessResult -ne 0) {
+        Write-Warning "Typed ReadGpa failed — cannot proceed"
+        Close-HvlibPartition -handle $handle
+        return $null
+    }
+
+    # A.2: Write same bytes back (non-destructive)
+    Write-Host "      Step 2: Invoke-HvCallWriteGpa — writing same bytes back..." -ForegroundColor Cyan
+    $typedWrite = Invoke-HvCallWriteGpa -PartitionId $partitionId -BaseGpa $physAddr -Data $typedRead1.Data
+    $twColor = if ($typedWrite.Ok -and $typedWrite.AccessResult -eq 0) { "Green" } else { "Red" }
+    Write-Host ("      Write Ok={0}, AccessResult=0x{1:X}" -f $typedWrite.Ok, $typedWrite.AccessResult) -ForegroundColor $twColor
+
+    # A.3: Verify
+    Write-Host "      Step 3: Invoke-HvCallReadGpa — verifying..." -ForegroundColor Cyan
+    $typedRead2 = Invoke-HvCallReadGpa -PartitionId $partitionId -BaseGpa $physAddr -ByteCount $bytesToRW
+    $hexTypedVerify = ($typedRead2.Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    $matchTypedRoundTrip = ($hexTypedOrig -eq $hexTypedVerify)
+    Write-Host ("      Verify: {0}  RoundTrip={1}" -f $hexTypedVerify, $matchTypedRoundTrip) -ForegroundColor $(if ($matchTypedRoundTrip) { "Green" } else { "Red" })
+
+    # ===============================================================
+    # Method B: Generic interface (unknown hypercall)
+    # ===============================================================
+    Write-Host ""
+    Write-Host "  [B] Generic interface: Invoke-HypercallRaw -CallCode $($HvCallCode.HvCallReadGpa) / $($HvCallCode.HvCallWriteGpa)" -ForegroundColor Yellow
+
+    # B.1: Read via generic (ReadGpa)
+    Write-Host "      Step 1: Invoke-HypercallRaw $($HvCallCode.HvCallReadGpa) (ReadGpa) — reading..." -ForegroundColor Cyan
+    $genRead1 = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$partitionId
+        VpIndex      = [uint32]0
+        ByteCount    = [uint32]$bytesToRW
+        BaseGpa      = [uint64]$physAddr
+        ControlFlags = [uint64]0
+    }) -OutputSize 24
+
+    $genRead1Access = [BitConverter]::ToUInt64($genRead1.OutputBytes, 0)
+    $genRead1Data = [byte[]]$genRead1.OutputBytes[8..(8 + $bytesToRW - 1)]
+    $hexGenOrig = ($genRead1Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    $grColor = if ($genRead1.Ok -and $genRead1Access -eq 0) { "Green" } else { "Red" }
+    Write-Host ("      Read  Ok={0}, AccessResult=0x{1:X}, Data: {2}" -f $genRead1.Ok, $genRead1Access, $hexGenOrig) -ForegroundColor $grColor
+
+    # B.2: Write via generic (WriteGpa)
+    Write-Host "      Step 2: Invoke-HypercallRaw $($HvCallCode.HvCallWriteGpa) (WriteGpa) — writing same bytes back..." -ForegroundColor Cyan
+    $padded = [byte[]]::new(16)
+    [Array]::Copy($genRead1Data, $padded, $bytesToRW)
+
+    $genWrite = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallWriteGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$partitionId
+        VpIndex      = [uint32]0
+        ByteCount    = [uint32]$bytesToRW
+        BaseGpa      = [uint64]$physAddr
+        ControlFlags = [uint64]0
+        Data         = [byte[]]$padded
+    }) -OutputSize 8
+
+    $genWriteAccess = [BitConverter]::ToUInt64($genWrite.OutputBytes, 0)
+    $gwColor = if ($genWrite.Ok -and $genWriteAccess -eq 0) { "Green" } else { "Red" }
+    Write-Host ("      Write Ok={0}, AccessResult=0x{1:X}" -f $genWrite.Ok, $genWriteAccess) -ForegroundColor $gwColor
+
+    # B.3: Verify via generic (ReadGpa)
+    Write-Host "      Step 3: Invoke-HypercallRaw $($HvCallCode.HvCallReadGpa) (ReadGpa) — verifying..." -ForegroundColor Cyan
+    $genRead2 = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$partitionId
+        VpIndex      = [uint32]0
+        ByteCount    = [uint32]$bytesToRW
+        BaseGpa      = [uint64]$physAddr
+        ControlFlags = [uint64]0
+    }) -OutputSize 24
+
+    $genRead2Data = [byte[]]$genRead2.OutputBytes[8..(8 + $bytesToRW - 1)]
+    $hexGenVerify = ($genRead2Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    $matchGenRoundTrip = ($hexGenOrig -eq $hexGenVerify)
+    Write-Host ("      Verify: {0}  RoundTrip={1}" -f $hexGenVerify, $matchGenRoundTrip) -ForegroundColor $(if ($matchGenRoundTrip) { "Green" } else { "Red" })
+
+    # ===============================================================
+    # Cross-check: Typed vs Generic vs SDK
+    # ===============================================================
+    Write-Host ""
+    Write-Host "  Cross-check:" -ForegroundColor Cyan
+
+    $physBytes = Get-HvlibVmPhysicalMemory -prtnHandle $handle -start_position $physAddr -size $bytesToRW
+    $hexSdk = ""
+    if ($physBytes) {
+        $physSlice = [byte[]]$physBytes[0..($bytesToRW - 1)]
+        $hexSdk = ($physSlice | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+    }
+
+    $matchTypedGeneric = ($hexTypedOrig -eq $hexGenOrig)
+    $matchTypedSdk     = ($hexTypedOrig -eq $hexSdk)
+
+    Write-Host ""
+    Write-Host ("  {0,-48} {1}" -f "Method", "Data") -ForegroundColor Cyan
+    Write-Host ("  " + '-' * 70)
+    Write-Host ("  {0,-48} {1}" -f "[A] Typed — initial read",   $hexTypedOrig) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "[A] Typed — after write",    $hexTypedVerify) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "[B] Generic — initial read", $hexGenOrig) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "[B] Generic — after write",  $hexGenVerify) -ForegroundColor Yellow
+    Write-Host ("  {0,-48} {1}" -f "SdkReadPhysicalMemory",      $hexSdk)
+    Write-Host ""
+    Write-Host ("  Typed round-trip match   : {0}" -f $matchTypedRoundTrip)  -ForegroundColor $(if ($matchTypedRoundTrip)  { "Green" } else { "Red" })
+    Write-Host ("  Generic round-trip match : {0}" -f $matchGenRoundTrip)    -ForegroundColor $(if ($matchGenRoundTrip)    { "Green" } else { "Red" })
+    Write-Host ("  Typed == Generic         : {0}" -f $matchTypedGeneric)    -ForegroundColor $(if ($matchTypedGeneric)    { "Green" } else { "Red" })
+    Write-Host ("  Typed == SdkReadPhysMem  : {0}" -f $matchTypedSdk)        -ForegroundColor $(if ($matchTypedSdk)        { "Green" } else { "Red" })
+
+    $result = [PSCustomObject]@{
+        PhysicalAddr         = "0x$($physAddr.ToString('X'))"
+        TypedOrigData        = $hexTypedOrig
+        TypedVerifyData      = $hexTypedVerify
+        TypedWriteOk         = $typedWrite.Ok
+        TypedRoundTrip       = $matchTypedRoundTrip
+        GenericOrigData      = $hexGenOrig
+        GenericVerifyData    = $hexGenVerify
+        GenericWriteOk       = $genWrite.Ok
+        GenericRoundTrip     = $matchGenRoundTrip
+        SdkPhysData          = $hexSdk
+        MatchTypedGeneric    = $matchTypedGeneric
+        MatchTypedSdk        = $matchTypedSdk
+    }
+
+    Close-HvlibPartition -handle $handle
+    return $result
+}
+
+#endregion
+
+# ==============================================================================
 #region Workflows
 # ==============================================================================
 
@@ -2437,6 +2828,10 @@ function Invoke-AllExamples {
 
     # Symbol Workflow
     Workflow-SymbolAnalysis -VmName $VmName | Out-Null
+
+    # Section 14: Hypercall Operations
+    Example-InvokeHypercall-ReadGpa -VmName $VmName | Out-Null
+    Example-InvokeHypercall-WriteReadGpa -VmName $VmName | Out-Null
 
     # Final cleanup
     Example-CloseHvlibPartitions | Out-Null
