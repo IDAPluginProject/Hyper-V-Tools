@@ -49,7 +49,7 @@
 #       - Total: 28 public functions (21 + 7 new)
 # 1.1.1 - Bug fix release
 #       - FIXED: Removed hard-coded DEFAULT_DLL_PATH constant
-#       - FIXED: Export-ModuleMember errors in dot-sourced files
+#       - FIXED: Export-ModuleMember errors in files loaded with the dot (.) operator
 #       - CHANGED: Get-Hvlib requires -path_to_dll parameter (mandatory)
 #       - IMPROVED: DLL path saved and reused automatically
 # 1.1.0 - Refactored version with improved code quality and readability

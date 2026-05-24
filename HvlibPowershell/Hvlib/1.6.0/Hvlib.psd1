@@ -221,7 +221,7 @@ Version 1.3.0 (Major Feature Release)
 
 Version 1.1.1 (Bug Fix Release)
 - FIXED: Removed hard-coded DEFAULT_DLL_PATH constant
-- FIXED: Export-ModuleMember errors in dot-sourced files (Constants, Helpers)
+- FIXED: Export-ModuleMember errors in files loaded with the dot (.) operator (Constants, Helpers)
 - CHANGED: Get-Hvlib now requires -path_to_dll parameter (mandatory)
 - IMPROVED: DLL path is saved and reused automatically for subsequent calls
 - UPDATED: All examples to include DLL path parameter

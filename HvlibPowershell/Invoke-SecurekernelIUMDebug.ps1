@@ -1,6 +1,9 @@
 <#
 .SYNOPSIS
-    Secure Kernel IUM Debugging Tool - SUPERLITE (patch-only, no backup/restore).
+    Secure Kernel IUM Debugging Tool - powershell version.
+    
+    Based on cbwang505's hvsecurekernel C# tool (https://github.com/cbwang505/SecurekernelIUMDebug), rewritten in PowerShell
+    using Hvlib SDK primitives instead of raw DeviceIoControl/P/Invoke.
 
 .DESCRIPTION
     Stripped-down version of Invoke-SecurekernelIUMDebug-Lite.ps1 that does ONLY

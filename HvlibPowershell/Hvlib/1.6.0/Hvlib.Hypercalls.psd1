@@ -52,7 +52,8 @@ Version 1.1.0
   Invoke-HvCallGetVpRegisters, Invoke-HvCallSetVpRegisters,
   Invoke-HvCallTranslateVirtualAddress, Invoke-HvCallPostMessage,
   Invoke-HvCallSignalEvent). They were moved to Hvlib-HvExamples.ps1
-  as user-editable examples (dot-source the file to get them).
+  as user-editable examples (load the file with the dot operator -
+  `. .\Hvlib-HvExamples.ps1` - to bring them into the current scope).
 - Module now exposes only the generic interface: Invoke-Hypercall,
   Invoke-HypercallRaw, $HvCallCode.
 

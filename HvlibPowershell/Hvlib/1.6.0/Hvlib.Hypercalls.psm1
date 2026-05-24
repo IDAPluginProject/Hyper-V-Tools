@@ -16,7 +16,8 @@
 # Invoke-HvCallSetVpRegisters, Invoke-HvCallTranslateVirtualAddress,
 # Invoke-HvCallPostMessage, Invoke-HvCallSignalEvent) are NOT shipped from
 # this module since 1.1.0. They live as user-editable examples in
-# Hvlib-HvExamples.ps1 — dot-source that file to get them.
+# Hvlib-HvExamples.ps1 — load that file with the dot (.) operator
+# (`. .\Hvlib-HvExamples.ps1`, runs it in your current scope) to get them.
 #
 # Hypercall codes — complete table from hvgdk.h, hvgdk_mini.h, and TLFS.
 # Key naming follows hvgdk.h convention: HvCall<Name>
@@ -80,7 +81,7 @@
 #         Invoke-HvCallTranslateVirtualAddress, Invoke-HvCallPostMessage,
 #         Invoke-HvCallSignalEvent.
 #       - They were moved to Hvlib-HvExamples.ps1 as user-editable examples;
-#         dot-source that file to get them.
+#         load that file with the dot (.) operator to get them in scope.
 #       - Module now exposes ONLY the generic interface:
 #         Invoke-Hypercall, Invoke-HypercallRaw, $HvCallCode.
 #
