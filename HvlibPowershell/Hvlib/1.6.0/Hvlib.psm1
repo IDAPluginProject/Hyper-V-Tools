@@ -1,10 +1,25 @@
 # ==============================================================================
 # Module:      Hvlib.psm1
-# Version:     1.5.0
+# Version:     1.6.0
 # Description: PowerShell wrapper for hvlib.dll - Hyper-V Memory Manager Plugin
 # Author:      Arthur Khudyaev (www.x.com/gerhart_x)
 # ==============================================================================
 # Change Log:
+# 1.6.0 - Library Teardown + small shared utilities in hvlibdotnet.dll
+#         - ADDED: Close-Hvlib (public) / Remove-Hvlib (Helpers) - counterpart
+#           to Get-Hvlib/Initialize-Hvlib. Calls CloseAllPartitions() and
+#           resets $Script:is_lib_loaded. Does NOT unload the .NET assembly
+#           (Add-Type cannot be undone in default AssemblyLoadContext).
+#         - SYNCED: hvlibdotnet.dll v1.6.0 adds small utilities, callable
+#           directly as [Hvlibdotnet.Hvlib]::* :
+#           ReadPhysicalUInt64, ReadVirtualMemory(byte[] overload),
+#           FormatHexDump, BytesEqual.
+#         - INTENTIONALLY NOT in C#: page-table walk and "VTL1 read with
+#           page-walk fallback" stay in PowerShell (each consuming script
+#           has its own Resolve-PageTableAddress / Read-SecurekernelVirtualMemory).
+#           Rationale: the walk needs to be easy to inspect/tweak on the fly
+#           when diagnosing VTL1 mapping issues.
+#         - VERSION ALIGN: Hvlib_aux and Hvlib.Hypercalls also bumped to 1.6.0.
 # 1.5.0 - Partition Config & Hypercall Operations
 #       - ADDED: Set-HvlibPartitionConfig (SdkSetPartitionConfig)
 #       - ADDED: Get-HvlibPartitionConfig (SdkGetPartitionConfig)
@@ -104,8 +119,50 @@ function Get-Hvlib {
 
     # Save DLL path for subsequent calls
     $Script:dll_path = $path_to_dll
-    
+
     return Initialize-Hvlib -DllPath $path_to_dll
+}
+
+function Close-Hvlib {
+    <#
+    .SYNOPSIS
+    Public counterpart to Get-Hvlib. Releases native resources and resets
+    the module's loaded-state. Call at the end of a script.
+
+    .DESCRIPTION
+    Thin wrapper over Remove-Hvlib (from Hvlib.Helpers.ps1). Does:
+      - [Hvlibdotnet.Hvlib]::CloseAllPartitions() — real native cleanup
+      - resets $Script:is_lib_loaded so the next Get-Hvlib re-runs Add-Type
+      - optionally clears the cached $Script:dll_path
+
+    Does NOT (and cannot) unload hvlibdotnet.dll from the PowerShell process.
+    Add-Type loads the assembly into the default AssemblyLoadContext, which
+    .NET does not allow to unload. A fresh pwsh session is required to pick
+    up a newly-built DLL — see Remove-Hvlib for full details.
+
+    .PARAMETER ClearDllPath
+    Also clear the cached DLL path so the next Get-Hvlib requires an
+    explicit -path_to_dll argument again.
+
+    .PARAMETER SkipPartitionClose
+    Skip CloseAllPartitions (e.g. when partitions were already closed
+    individually).
+
+    .EXAMPLE
+    # At end of a script
+    Close-Hvlib
+
+    .EXAMPLE
+    # In a script that wants to fully forget the DLL path
+    Close-Hvlib -ClearDllPath
+    #>
+    [CmdletBinding()]
+    param(
+        [switch]$ClearDllPath,
+        [switch]$SkipPartitionClose
+    )
+
+    return Remove-Hvlib -ClearDllPath:$ClearDllPath -SkipPartitionClose:$SkipPartitionClose
 }
 
 function Get-HvlibPreferredSettings {
@@ -1531,8 +1588,9 @@ function Get-HexValue {
 # ==============================================================================
 
 Export-ModuleMember -Function @(
-    # Configuration (2)
+    # Configuration (3)
     'Get-Hvlib',
+    'Close-Hvlib',
     'Get-HvlibPreferredSettings',
     
     # Partition Management (3)

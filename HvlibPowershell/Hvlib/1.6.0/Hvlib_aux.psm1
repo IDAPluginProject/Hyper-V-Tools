@@ -1,6 +1,6 @@
 # ==============================================================================
 # Module:      Hvlib_aux.psm1
-# Version:     1.0.0
+# Version:     1.6.0
 # Description: Auxiliary tools for Hvlib — Capstone x64 disassembly engine
 #              wrapper and instruction analysis helpers.
 # Author:      Arthur Khudyaev (www.x.com/gerhart_x)
@@ -256,12 +256,30 @@ function Initialize-Capstone {
 
     if (-not $capstoneDll -or -not (Test-Path $capstoneDll)) {
         Write-Error @"
-capstone.dll not found. To install without Python:
-  1. Download pre-built Windows x64 package from https://www.capstone-engine.org/download.html
-  2. Extract capstone.dll to one of:
-     - $modulePath
-     - C:\Distr\LiveCloudKd_public\
-     - Any directory in your PATH
+capstone.dll not found. Install it via ONE of the following:
+
+  A) Easiest - via Python (the auto-detector picks it up from site-packages):
+       py -m pip install capstone
+     (or: pip install capstone)
+     Then re-run the script.
+
+  B) Standalone - no Python required:
+     1. Download the Windows x64 'core engine' zip from
+        https://www.capstone-engine.org/download.html
+        (or build from https://github.com/capstone-engine/capstone)
+     2. Extract capstone.dll into one of:
+        - $modulePath
+        - C:\Distr\LiveCloudKd_public\
+        - C:\Tools\capstone\  or  C:\capstone\
+        - any directory in your PATH
+
+  C) Explicit path - if capstone.dll is already on disk somewhere else:
+       Initialize-Capstone -DllPath 'C:\path\to\capstone.dll'
+     Or pass -CapstoneDllPath '<path>' to the calling script.
+
+Searched paths (in order): module dir, LiveCloudKd_public, C:\Tools\capstone,
+C:\capstone, Program Files\capstone, NuGet capstone.net, %PATH%, Python
+site-packages (3.11-3.14).
 "@
         return $false
     }

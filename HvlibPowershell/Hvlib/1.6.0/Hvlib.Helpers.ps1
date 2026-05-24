@@ -54,8 +54,89 @@ function Initialize-Hvlib {
 
     Add-Type -Path $DllPath
     Write-Host ($Script:MSG_LIBRARY_LOADED -f $DllPath) -ForegroundColor $Script:COLOR_SUCCESS
-    
+
     $Script:is_lib_loaded = $true
+    return $true
+}
+
+function Remove-Hvlib {
+    <#
+    .SYNOPSIS
+    Counterpart to Initialize-Hvlib / Get-Hvlib. Releases native resources
+    (closes all open partitions) and resets the module's "loaded" state.
+
+    .DESCRIPTION
+    What this DOES:
+      - Calls [Hvlibdotnet.Hvlib]::CloseAllPartitions() to release any open
+        VM partition handles (real native cleanup via SdkCloseAllPartitions).
+      - Sets $Script:is_lib_loaded = $false so the next Get-Hvlib / Initialize
+        call will re-run Add-Type.
+      - Optionally clears the cached $Script:dll_path (use -ClearDllPath).
+
+    What this does NOT do (and cannot, without re-architecting the module):
+      - It does NOT unload hvlibdotnet.dll or its native dependency hvlib.dll
+        from the PowerShell process. Add-Type loads assemblies into the
+        default AssemblyLoadContext, which .NET does not allow to unload.
+        The [Hvlibdotnet.Hvlib] type and the pinned native DLL stay in the
+        process until pwsh exits.
+      - Consequence: if you rebuild hvlibdotnet.dll and want the new build
+        loaded, you MUST start a fresh pwsh session. Re-calling Get-Hvlib
+        in the current session will not replace the already-loaded types.
+
+    .PARAMETER ClearDllPath
+    Also clear the cached $Script:dll_path so the next Get-Hvlib call
+    requires an explicit -path_to_dll argument again.
+
+    .PARAMETER SkipPartitionClose
+    Skip the CloseAllPartitions step. Use if partitions were already closed
+    individually or the SDK is in an inconsistent state and the close call
+    would fault.
+
+    .EXAMPLE
+    # Normal teardown: closes partitions, resets state, keeps DLL path
+    Remove-Hvlib
+
+    .EXAMPLE
+    # Full teardown: also forget the DLL path
+    Remove-Hvlib -ClearDllPath
+
+    .OUTPUTS
+    [bool] $true on success (state reset), $false if nothing to do.
+    #>
+    [CmdletBinding()]
+    param(
+        [switch]$ClearDllPath,
+        [switch]$SkipPartitionClose
+    )
+
+    if (-not (Test-HvlibLoaded)) {
+        Write-Verbose "Hvlib is not marked as loaded — nothing to release."
+        if ($ClearDllPath) { $Script:dll_path = $null }
+        return $false
+    }
+
+    # Real resource cleanup: close any partitions the SDK is still holding.
+    # Guarded by both the switch and a type-presence check, so we never throw
+    # MethodNotFoundException if the assembly somehow isn't there.
+    if (-not $SkipPartitionClose) {
+        $hvlibType = [System.Management.Automation.PSTypeName]'Hvlibdotnet.Hvlib'
+        if ($hvlibType.Type) {
+            try {
+                [Hvlibdotnet.Hvlib]::CloseAllPartitions()
+                Write-Verbose "CloseAllPartitions() called successfully."
+            } catch {
+                Write-Warning "CloseAllPartitions() failed: $($_.Exception.Message)"
+            }
+        }
+    }
+
+    $Script:is_lib_loaded = $false
+    if ($ClearDllPath) { $Script:dll_path = $null }
+
+    # Write-Warning instead of Write-Host -ForegroundColor: when Close-Hvlib (module-
+    # scope) calls Remove-Hvlib (session-scope from ScriptsToProcess), $Script:COLOR_*
+    # may not be resolvable, which produced "Cannot bind parameter 'ForegroundColor'".
+    Write-Warning "Hvlib state reset. NOTE: .NET assembly hvlibdotnet.dll remains loaded in this process - a fresh pwsh session is required to pick up a newly-built DLL."
     return $true
 }
 

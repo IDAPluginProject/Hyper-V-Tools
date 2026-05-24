@@ -1,12 +1,12 @@
 # ==============================================================================
 # Module Manifest: Hvlib_aux.psd1
-# Version:         1.0.0
+# Version:         1.6.0
 # Description:     Auxiliary tools for Hvlib — Capstone x64 disassembly
 # ==============================================================================
 
 @{
     RootModule        = 'Hvlib_aux.psm1'
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.6.0'
     GUID              = 'A7F3B2C1-9D4E-4A8F-B6C2-1E5D7F9A3B4C'
     Author            = 'Arthur Khudyaev (@gerhart_x)'
     CompanyName       = ''
@@ -43,6 +43,10 @@
             Tags         = @('Capstone', 'Disassembly', 'x64', 'Reverse-Engineering', 'Hyper-V')
             ProjectUri   = 'https://github.com/gerhart01/Hyper-V-Tools'
             ReleaseNotes = @'
+Version 1.6.0 (Version alignment)
+- No functional changes. Module version bumped to 1.6.0 to align with the
+  main Hvlib module and hvlibdotnet.dll v1.6.0.
+
 Version 1.0.0 (Initial Release)
 - Extracted from Hvlib.psm1 v1.5.0 into standalone auxiliary module
 - Initialize-Capstone: load capstone.dll with auto-detection from Python site-packages

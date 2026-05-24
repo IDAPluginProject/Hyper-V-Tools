@@ -13,7 +13,7 @@ $Script:MODULE_NAME = "Hvlib"
 $Script:MODULE_VERSION = "1.1.1"
 
 # Console colors
-$Script:COLOR_SUCCESS = "DarkMagenta"
+$Script:COLOR_SUCCESS = "Green"
 $Script:COLOR_INFO = "Cyan"
 $Script:COLOR_WARNING = "Yellow"
 $Script:COLOR_ERROR = "Red"

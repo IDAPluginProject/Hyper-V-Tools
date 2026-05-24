@@ -1,6 +1,6 @@
 # ==============================================================================
 # Module Manifest: Hvlib.psd1
-# Version:         1.4.0
+# Version:         1.6.0
 # Description:     PowerShell Module Manifest for Hvlib
 # ==============================================================================
 
@@ -9,7 +9,7 @@
     RootModule = 'Hvlib.psm1'
 
     # Version number of this module
-    ModuleVersion = '1.5.0'
+    ModuleVersion = '1.6.0'
     
     # ID used to uniquely identify this module
     GUID = 'BD2EDFC0-C293-4B01-AC0B-3065DF025AB1'
@@ -58,8 +58,9 @@
     
     # Functions to export from this module
     FunctionsToExport = @(
-        # Library Management (2)
+        # Library Management (3)
         'Get-Hvlib',
+        'Close-Hvlib',
         'Get-HvlibPreferredSettings',
         
         # Partition Enumeration and Selection (3)
@@ -170,6 +171,25 @@
             
             # ReleaseNotes of this module
             ReleaseNotes = @'
+Version 1.6.0 (Library teardown + small shared utilities in hvlibdotnet.dll)
+- ADDED: Close-Hvlib (Hvlib.psm1) / Remove-Hvlib (Hvlib.Helpers.ps1) -
+  counterpart to Get-Hvlib/Initialize-Hvlib. Calls CloseAllPartitions and
+  resets $Script:is_lib_loaded. Does NOT unload the .NET assembly itself
+  (Add-Type cannot be undone in default AssemblyLoadContext); a fresh
+  pwsh session is required to pick up a rebuilt DLL.
+- New small utilities in hvlibdotnet.dll, callable as [Hvlibdotnet.Hvlib]::*:
+    - ReadPhysicalUInt64(handle, addr)                -> ulong
+    - ReadVirtualMemory(handle, va, size)             -> byte[]  (byte[] overload)
+    - FormatHexDump(bytes, baseAddr, bytesPerLine)    -> string[]
+    - BytesEqual(a, b, offsetA, offsetB, length)      -> bool
+- INTENTIONALLY NOT in C#: page-table walk and "read VTL1 VA with page-walk
+  fallback" live in PowerShell (each consuming script has its own
+  Resolve-PageTableAddress / Read-SecurekernelVirtualMemory). Rationale:
+  the walk needs to be easy to inspect and tweak on the fly when diagnosing
+  VTL1 mapping issues (PFN-mask edge cases, large-page handling, etc).
+- Hvlib_aux and Hvlib.Hypercalls submodules also bumped to 1.6.0 for
+  version alignment.
+
 Version 1.5.0 (Partition Config, Hypercall & Capstone Disassembly)
 - ADDED: Set-HvlibPartitionConfig - Set partition configuration via SdkSetPartitionConfig
 - ADDED: Get-HvlibPartitionConfig - Get partition configuration via SdkGetPartitionConfig

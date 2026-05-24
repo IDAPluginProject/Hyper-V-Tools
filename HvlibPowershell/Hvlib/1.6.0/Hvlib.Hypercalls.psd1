@@ -1,18 +1,18 @@
 # ==============================================================================
 # Module Manifest: Hvlib.Hypercalls.psd1
-# Version:         1.0.0
-# Description:     Typed Hyper-V hypercall wrappers based on TLFS
+# Version:         1.6.0
+# Description:     Generic Hyper-V hypercall interface (DSL + raw)
 # ==============================================================================
 
 @{
     RootModule        = 'Hvlib.Hypercalls.psm1'
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.6.0'
     GUID              = 'D4E8F1A2-7B3C-4D9E-A5F6-2C8E1D3B5A7F'
     Author            = 'Arthur Khudyaev (@gerhart_x)'
     CompanyName       = ''
     Copyright         = '(c) All rights reserved'
 
-    Description       = 'Typed Hyper-V hypercall wrappers based on the Top Level Functional Specification (TLFS). Provides PowerShell cmdlets for HvCallReadGpa, HvCallWriteGpa, HvCallGetVpRegisters, HvCallTranslateVirtualAddress, and other hypercalls, plus a generic Invoke-Hypercall for arbitrary hypercall codes.'
+    Description       = 'Generic Hyper-V hypercall interface based on the Top Level Functional Specification (TLFS). Exposes Invoke-Hypercall (DSL by name + -Field Value pairs) and Invoke-HypercallRaw (low-level by code + byte[]/[ordered]@{}), plus the $HvCallCode table of 261 hypercall codes. Per-hypercall typed wrappers ship as user-editable examples in Hvlib-HvExamples.ps1.'
 
     PowerShellVersion = '7.0'
 
@@ -23,20 +23,13 @@
         # Generic hypercall interface (DSL: by name + -Field Value pairs)
         'Invoke-Hypercall',
         # Low-level interface (by code + byte[]/ordered/@{})
-        'Invoke-HypercallRaw',
-        # Typed TLFS wrappers
-        'Invoke-HvCallReadGpa',           # 0x0053
-        'Invoke-HvCallWriteGpa',          # 0x0054
-        'Invoke-HvCallGetPartitionId',    # 0x0046
-        'Invoke-HvCallGetVpRegisters',    # 0x0050
-        'Invoke-HvCallSetVpRegisters',    # 0x0051
-        'Invoke-HvCallTranslateVirtualAddress',  # 0x0052
-        'Invoke-HvCallPostMessage',       # 0x005C
-        'Invoke-HvCallSignalEvent'        # 0x005D
+        'Invoke-HypercallRaw'
     )
 
-    CmdletsToExport   = @()
-    VariablesToExport  = @()
+    CmdletsToExport    = @()
+    # $HvCallCode is the ordered table of all 261 hypercall name -> code mappings.
+    # Consumers reference it as $HvCallCode.HvCallReadGpa etc. — must be exported.
+    VariablesToExport  = @('HvCallCode')
     AliasesToExport    = @()
 
     FileList = @(
@@ -49,16 +42,24 @@
             Tags         = @('Hyper-V', 'Hypercall', 'TLFS', 'Virtualization', 'Memory')
             ProjectUri   = 'https://github.com/gerhart01/Hyper-V-Tools'
             ReleaseNotes = @'
-Version 1.0.0 (Initial Release)
+Version 1.6.0 (Version alignment)
+- No functional changes. Module version bumped to 1.6.0 to align with the
+  main Hvlib module and hvlibdotnet.dll v1.6.0.
+
+Version 1.1.0
+- BREAKING: Removed per-hypercall typed wrappers (Invoke-HvCallReadGpa,
+  Invoke-HvCallWriteGpa, Invoke-HvCallGetPartitionId,
+  Invoke-HvCallGetVpRegisters, Invoke-HvCallSetVpRegisters,
+  Invoke-HvCallTranslateVirtualAddress, Invoke-HvCallPostMessage,
+  Invoke-HvCallSignalEvent). They were moved to Hvlib-HvExamples.ps1
+  as user-editable examples (dot-source the file to get them).
+- Module now exposes only the generic interface: Invoke-Hypercall,
+  Invoke-HypercallRaw, $HvCallCode.
+
+Version 1.0.0
 - Invoke-Hypercall: generic hypercall with auto-serialization ([ordered]@{}, array, byte[])
-- Invoke-HvCallReadGpa (0x0053): read up to 16 bytes from guest physical address
-- Invoke-HvCallWriteGpa (0x0054): write up to 16 bytes to guest physical address
-- Invoke-HvCallGetPartitionId (0x0046): get partition ID
-- Invoke-HvCallGetVpRegisters (0x0050): read VP registers (rep hypercall)
-- Invoke-HvCallSetVpRegisters (0x0051): write VP registers (rep hypercall)
-- Invoke-HvCallTranslateVirtualAddress (0x0052): GVA to GPA translation
-- Invoke-HvCallPostMessage (0x005C): post SynIC message
-- Invoke-HvCallSignalEvent (0x005D): signal SynIC event
+- Invoke-HypercallRaw: low-level byte[]-based invocation
+- $HvCallCode: ordered table of 261 hypercall name -> code mappings
 - All input/output structures based on Microsoft TLFS
 - References: https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/tlfs
 '@

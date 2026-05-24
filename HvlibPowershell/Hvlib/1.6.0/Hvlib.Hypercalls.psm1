@@ -1,10 +1,31 @@
 # ==============================================================================
 # Module:      Hvlib.Hypercalls.psm1
-# Version:     1.0.0
-# Description: Typed Hyper-V hypercall wrappers based on TLFS (Top Level
-#              Functional Specification) and generic hypercall invocation.
+# Version:     1.6.0
+# Description: Generic Hyper-V hypercall interface based on TLFS (Top Level
+#              Functional Specification).
 # Author:      Arthur Khudyaev (www.x.com/gerhart_x)
 # ==============================================================================
+#
+# What this module exports:
+#   - Invoke-Hypercall       — DSL by name: -Code HvCallReadGpa -Field Value ...
+#   - Invoke-HypercallRaw    — low-level: by uint16 code + byte[]/[ordered]@{}
+#   - $HvCallCode            — ordered table of all 261 hypercall name -> code mappings
+#
+# Per-hypercall typed wrappers (Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa,
+# Invoke-HvCallGetPartitionId, Invoke-HvCallGetVpRegisters,
+# Invoke-HvCallSetVpRegisters, Invoke-HvCallTranslateVirtualAddress,
+# Invoke-HvCallPostMessage, Invoke-HvCallSignalEvent) are NOT shipped from
+# this module since 1.1.0. They live as user-editable examples in
+# Hvlib-HvExamples.ps1 — dot-source that file to get them.
+#
+# Hypercall codes — complete table from hvgdk.h, hvgdk_mini.h, and TLFS.
+# Key naming follows hvgdk.h convention: HvCall<Name>
+#
+# Sources:
+#   [hvgdk.h]      LiveCloudKd SDK / Alex Ionescu HDK (www.github.com/ionescu007)
+#   [hvgdk_mini.h] Linux kernel / mshv headers
+#   [mu_msvm]      microsoft/mu_msvm HvGuestHypercall.h
+#   [TLFS]         Microsoft Hypervisor Top Level Functional Specification
 #
 # References:
 #   [TLFS] Microsoft Hypervisor Top Level Functional Specification
@@ -38,43 +59,47 @@
 #          https://github.com/gerhart01/LiveCloudKd
 #
 # Architecture:
-#   PowerShell (this module)         C# (hvlibdotnet.dll)         Driver (hvmm.sys)
-#   +--------------------------+     +---------------------+      +------------------+
-#   | Invoke-HvCallReadGpa     |     | InvokeHypercallBytes|      | SdkInvokeHypercall|
-#   | Invoke-HvCallWriteGpa    | --> |  byte[] -> byte[]   | -->  | AllocPages,vmcall |
-#   | Invoke-HypercallRaw         |     |  (buffer mgmt)      |      |  (kernel mode)    |
-#   +--------------------------+     +---------------------+      +------------------+
+#   PowerShell (this module)         C# (hvlibdotnet.dll)          Driver (hvmm.sys)
+#   +--------------------------+     +----------------------+      +-------------------+
+#   | Invoke-Hypercall  (DSL)  |     | InvokeHypercallBytes |      | SdkInvokeHypercall|
+#   | Invoke-HypercallRaw      | --> |  byte[] -> byte[]    | -->  | AllocPages, vmcall|
+#   | $HvCallCode (lookup)     |     |  (buffer mgmt)       |      |  (kernel mode)    |
+#   +--------------------------+     +----------------------+      +-------------------+
+#   ConvertTo-HypercallBytes is an internal serializer used by Invoke-Hypercall
+#   to flatten [ordered]@{} / arrays / byte[] into the buffer the SDK expects.
 #
 # Change Log:
+# 1.6.0 - Version alignment (no functional changes)
+#       - Bumped to 1.6.0 alongside Hvlib (Close-Hvlib added there) and
+#         Hvlib_aux (capstone install hints), to keep the suite in lockstep.
+#
+# 1.1.0 - Generic-only API (BREAKING)
+#       - REMOVED from this module: per-hypercall typed wrappers
+#         Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, Invoke-HvCallGetPartitionId,
+#         Invoke-HvCallGetVpRegisters, Invoke-HvCallSetVpRegisters,
+#         Invoke-HvCallTranslateVirtualAddress, Invoke-HvCallPostMessage,
+#         Invoke-HvCallSignalEvent.
+#       - They were moved to Hvlib-HvExamples.ps1 as user-editable examples;
+#         dot-source that file to get them.
+#       - Module now exposes ONLY the generic interface:
+#         Invoke-Hypercall, Invoke-HypercallRaw, $HvCallCode.
+#
 # 1.0.0 - Initial release
-#       - Invoke-HypercallRaw          — generic: any hypercall via code + byte[]/ordered/array
-#       - Invoke-HvCallReadGpa      — 0x0053: read up to 16 bytes from GPA
-#       - Invoke-HvCallWriteGpa     — 0x0054: write up to 16 bytes to GPA
-#       - Invoke-HvCallGetPartitionId — 0x0046: get calling partition ID
-#       - Invoke-HvCallGetVpRegisters — 0x0050: read VP registers (rep)
-#       - Invoke-HvCallSetVpRegisters — 0x0051: write VP registers (rep)
+#       - Invoke-HypercallRaw                  — any hypercall via code + byte[]/ordered/array
+#       - Invoke-HvCallReadGpa                 — 0x0053: read up to 16 bytes from GPA
+#       - Invoke-HvCallWriteGpa                — 0x0054: write up to 16 bytes to GPA
+#       - Invoke-HvCallGetPartitionId          — 0x0046: get calling partition ID
+#       - Invoke-HvCallGetVpRegisters          — 0x0050: read VP registers (rep)
+#       - Invoke-HvCallSetVpRegisters          — 0x0051: write VP registers (rep)
 #       - Invoke-HvCallTranslateVirtualAddress — 0x0052: GVA → GPA translation
-#       - Invoke-HvCallPostMessage  — 0x005C: post SynIC message
-#       - Invoke-HvCallSignalEvent  — 0x005D: signal SynIC event
+#       - Invoke-HvCallPostMessage             — 0x005C: post SynIC message
+#       - Invoke-HvCallSignalEvent             — 0x005D: signal SynIC event
 #       - Total: 9 public functions
 # ==============================================================================
 
-
-# ==============================================================================
 #region Hypercall code constants
 # ==============================================================================
 
-# Hypercall codes — complete table from hvgdk.h, hvgdk_mini.h, and TLFS.
-# Key naming follows hvgdk.h convention: HvCall<Name>
-#
-# Sources:
-#   [hvgdk.h]      LiveCloudKd SDK / ionescu007/hdk
-#   [hvgdk_mini.h] Linux kernel / mshv headers
-#   [mu_msvm]      microsoft/mu_msvm HvGuestHypercall.h
-#   [TLFS]         Microsoft Hypervisor Top Level Functional Specification
-#   [RE]           Reverse-engineered from hv.exe / hvix64.exe (Win11+)
-#
-# https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercall-interface
 
 $Script:HvCallCode = [ordered]@{
 
@@ -441,13 +466,8 @@ $Script:HvCallCode = [ordered]@{
 
 #endregion
 
-
-
-
-
-
 # ==============================================================================
-#region Internal helpers
+# region Internal helpers
 # ==============================================================================
 
 function ConvertTo-HypercallBytes {
@@ -478,7 +498,7 @@ function ConvertTo-HypercallBytes {
 
 
 # ==============================================================================
-#region Generic hypercall interface
+# region Generic hypercall interface
 # ==============================================================================
 
 function Invoke-HypercallRaw {
@@ -711,492 +731,23 @@ function Invoke-Hypercall {
 
 #endregion
 
-#
-# Other samples
-#
 
-# ==============================================================================
-# region Typed hypercall wrappers (TLFS-based)
-#
-# Each function maps 1:1 to a Hyper-V hypercall from the TLFS.
-# Parameters are named after the TLFS struct fields.
-# Internally they call Invoke-HypercallRaw (generic) -> InvokeHypercallBytes (C#).
-# ==============================================================================
-
-function Invoke-HvCallReadGpa {
-    <#
-    .SYNOPSIS
-    HvCallReadGpa (0x0053) — read up to 16 bytes from guest physical address.
-
-    .DESCRIPTION
-    Reads memory from a guest physical address using the HvCallReadGpa hypercall.
-    Returns a typed object with AccessResult and Data fields.
-
-    TLFS reference: [TLFS-MemoryAccess]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallReadGpa
-
-    Input:  HV_INPUT_READ_GPA  { PartitionId(8), VpIndex(4), ByteCount(4), BaseGpa(8), ControlFlags(8) }
-    Output: HV_OUTPUT_READ_GPA { AccessResult(8), Data[16] }
-
-    .PARAMETER PartitionId
-    Target partition ID.
-    .PARAMETER BaseGpa
-    Guest physical address to read from.
-    .PARAMETER ByteCount
-    Number of bytes to read (1-16, default 16).
-    .PARAMETER VpIndex
-    Virtual processor index (default 0).
-    .PARAMETER ControlFlags
-    Access control flags (default 0).
-
-    .EXAMPLE
-    $r = Invoke-HvCallReadGpa -PartitionId 3 -BaseGpa 0x100400000
-    $r.Data | Format-Hex
-
-    .EXAMPLE
-    $r = Invoke-HvCallReadGpa -PartitionId 3 -BaseGpa $physAddr -ByteCount 8
-    if ($r.Ok -and $r.AccessResult -eq 0) { "Read succeeded" }
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallReadGpa
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint64]$PartitionId,
-        [Parameter(Mandatory)][uint64]$BaseGpa,
-        [uint32]$ByteCount = 16,
-        [uint32]$VpIndex = 0,
-        [uint64]$ControlFlags = 0
-    )
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallReadGpa -InputData ([ordered]@{
-        PartitionId  = [uint64]$PartitionId
-        VpIndex      = [uint32]$VpIndex
-        ByteCount    = [uint32]$ByteCount
-        BaseGpa      = [uint64]$BaseGpa
-        ControlFlags = [uint64]$ControlFlags
-    }) -OutputSize 24
-
-    [PSCustomObject]@{
-        Ok           = $r.Ok
-        AccessResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
-        Data         = [byte[]]$r.OutputBytes[8..(8 + $ByteCount - 1)]
-    }
-}
-
-
-function Invoke-HvCallWriteGpa {
-    <#
-    .SYNOPSIS
-    HvCallWriteGpa (0x0054) — write up to 16 bytes to guest physical address.
-
-    .DESCRIPTION
-    Writes memory to a guest physical address using the HvCallWriteGpa hypercall.
-
-    TLFS reference: [TLFS-MemoryAccess]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallWriteGpa
-
-    Input:  HV_INPUT_WRITE_GPA  { PartitionId(8), VpIndex(4), ByteCount(4),
-                                   BaseGpa(8), ControlFlags(8), Data[16] }
-    Output: HV_OUTPUT_WRITE_GPA { AccessResult(8) }
-
-    .PARAMETER PartitionId
-    Target partition ID.
-    .PARAMETER BaseGpa
-    Guest physical address to write to.
-    .PARAMETER Data
-    Byte array to write (1-16 bytes).
-    .PARAMETER VpIndex
-    Virtual processor index (default 0).
-    .PARAMETER ControlFlags
-    Access control flags (default 0).
-
-    .EXAMPLE
-    Invoke-HvCallWriteGpa -PartitionId 3 -BaseGpa 0x100400000 -Data @(0x90, 0x90)
-
-    .EXAMPLE
-    $r = Invoke-HvCallWriteGpa -PartitionId 3 -BaseGpa $gpa -Data $bytes
-    if ($r.Ok -and $r.AccessResult -eq 0) { "Write succeeded" }
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallWriteGpa
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint64]$PartitionId,
-        [Parameter(Mandatory)][uint64]$BaseGpa,
-        [Parameter(Mandatory)][byte[]]$Data,
-        [uint32]$VpIndex = 0,
-        [uint64]$ControlFlags = 0
-    )
-
-    $byteCount = [Math]::Min($Data.Length, 16)
-    $padded = [byte[]]::new(16)
-    [Array]::Copy($Data, $padded, $byteCount)
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallWriteGpa -InputData ([ordered]@{
-        PartitionId  = [uint64]$PartitionId
-        VpIndex      = [uint32]$VpIndex
-        ByteCount    = [uint32]$byteCount
-        BaseGpa      = [uint64]$BaseGpa
-        ControlFlags = [uint64]$ControlFlags
-        Data         = [byte[]]$padded
-    }) -OutputSize 8
-
-    [PSCustomObject]@{
-        Ok           = $r.Ok
-        AccessResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
-    }
-}
-
-
-function Invoke-HvCallGetPartitionId {
-    <#
-    .SYNOPSIS
-    HvCallGetPartitionId (0x0046) — get the partition ID of the calling partition.
-
-    .DESCRIPTION
-    Returns the partition ID. No input parameters required.
-
-    TLFS reference: [TLFS-PartitionId]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallGetPartitionId
-
-    Output: HV_OUTPUT_GET_PARTITION_ID { PartitionId(8) }
-
-    .EXAMPLE
-    $r = Invoke-HvCallGetPartitionId
-    $r.PartitionId
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallGetPartitionId
-    #>
-    [CmdletBinding()]
-    param()
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallGetPartitionId -OutputSize 8
-
-    [PSCustomObject]@{
-        Ok          = $r.Ok
-        PartitionId = [BitConverter]::ToUInt64($r.OutputBytes, 0)
-    }
-}
-
-
-function Invoke-HvCallGetVpRegisters {
-    <#
-    .SYNOPSIS
-    HvCallGetVpRegisters (0x0050) — read virtual processor registers.
-
-    .DESCRIPTION
-    Reads one or more VP registers via hypercall. This is a rep hypercall
-    where CountOfElements = number of register names in the input.
-
-    TLFS reference: [TLFS-VpRegisters]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallGetVpRegisters
-
-    Input header:      { PartitionId(8), VpIndex(4), TargetVtl(1), Padding(3) }  = 16 bytes
-    Rep input element: { RegisterName(4) }  for each register
-    Rep output element:{ RegisterValue(16) } for each register (HV_REGISTER_VALUE is 128-bit)
-
-    Common register codes (HV_REGISTER_NAME) [TLFS-Appendix]:
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/datatypes/hv-register-name
-
-      RIP  = 0x00020000    RFLAGS = 0x00020001    RSP  = 0x00020002
-      RAX  = 0x00020003    RCX    = 0x00020004    RDX  = 0x00020005
-      RBX  = 0x00020006    RBP    = 0x00020007    RSI  = 0x00020008
-      RDI  = 0x00020009    CR0    = 0x00020012    CR3  = 0x00020014
-      CR4  = 0x00020015    DR0    = 0x00020017
-
-    .PARAMETER PartitionId
-    Target partition ID.
-    .PARAMETER VpIndex
-    Virtual processor index.
-    .PARAMETER RegisterNames
-    Array of register codes (uint32).
-    .PARAMETER Vtl
-    Target Virtual Trust Level (default 0).
-
-    .EXAMPLE
-    $r = Invoke-HvCallGetVpRegisters -PartitionId 3 -VpIndex 0 -RegisterNames @(0x20000, 0x20002)
-    "RIP = 0x{0:X}" -f $r.Values[0]
-    "RSP = 0x{0:X}" -f $r.Values[1]
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallGetVpRegisters
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint64]$PartitionId,
-        [uint32]$VpIndex = 0,
-        [Parameter(Mandatory)][uint32[]]$RegisterNames,
-        [byte]$Vtl = 0
-    )
-
-    $count = $RegisterNames.Length
-    # Header: PartitionId(8) + VpIndex(4) + Vtl(1) + Padding(3) = 16 bytes
-    # + RegisterName(4) * count
-    $buf = [System.IO.MemoryStream]::new()
-    $buf.Write([BitConverter]::GetBytes([uint64]$PartitionId), 0, 8)
-    $buf.Write([BitConverter]::GetBytes([uint32]$VpIndex), 0, 4)
-    $buf.WriteByte($Vtl)
-    $buf.Write([byte[]]::new(3), 0, 3)  # padding
-    foreach ($regName in $RegisterNames) {
-        $buf.Write([BitConverter]::GetBytes([uint32]$regName), 0, 4)
-    }
-
-    # Output: 16 bytes per register (HV_REGISTER_VALUE is 128-bit)
-    $outSize = $count * 16
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallGetVpRegisters `
-        -InputData $buf.ToArray() -OutputSize $outSize -CountOfElements $count
-
-    $values = [uint64[]]::new($count)
-    for ($i = 0; $i -lt $count; $i++) {
-        $values[$i] = [BitConverter]::ToUInt64($r.OutputBytes, $i * 16)
-    }
-
-    [PSCustomObject]@{
-        Ok     = $r.Ok
-        Values = $values
-    }
-}
-
-
-function Invoke-HvCallSetVpRegisters {
-    <#
-    .SYNOPSIS
-    HvCallSetVpRegisters (0x0051) — write virtual processor registers.
-
-    .DESCRIPTION
-    Writes one or more VP registers via hypercall. Rep hypercall.
-
-    TLFS reference: [TLFS-VpRegisters]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallSetVpRegisters
-
-    Input header:      { PartitionId(8), VpIndex(4), TargetVtl(1), Padding(3) } = 16 bytes
-    Rep input element: { RegisterName(4), Padding(4), RegisterValue(16) } = 24 bytes each
-
-    .PARAMETER PartitionId
-    Target partition ID.
-    .PARAMETER VpIndex
-    Virtual processor index.
-    .PARAMETER Registers
-    Array of hashtables: @{ Name=[uint32]; Value=[uint64] }
-    .PARAMETER Vtl
-    Target Virtual Trust Level (default 0).
-
-    .EXAMPLE
-    Invoke-HvCallSetVpRegisters -PartitionId 3 -VpIndex 0 -Registers @(
-        @{ Name=0x20000; Value=0xFFFFF80000000000 }  # Set RIP
-    )
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallSetVpRegisters
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint64]$PartitionId,
-        [uint32]$VpIndex = 0,
-        [Parameter(Mandatory)][hashtable[]]$Registers,
-        [byte]$Vtl = 0
-    )
-
-    $count = $Registers.Length
-    $buf = [System.IO.MemoryStream]::new()
-    # Header
-    $buf.Write([BitConverter]::GetBytes([uint64]$PartitionId), 0, 8)
-    $buf.Write([BitConverter]::GetBytes([uint32]$VpIndex), 0, 4)
-    $buf.WriteByte($Vtl)
-    $buf.Write([byte[]]::new(3), 0, 3)  # padding
-    # Rep elements: Name(4) + Pad(4) + Value(16)
-    foreach ($reg in $Registers) {
-        $buf.Write([BitConverter]::GetBytes([uint32]$reg.Name), 0, 4)
-        $buf.Write([byte[]]::new(4), 0, 4)  # padding
-        $buf.Write([BitConverter]::GetBytes([uint64]$reg.Value), 0, 8)
-        $buf.Write([byte[]]::new(8), 0, 8)  # high 64 bits of 128-bit value
-    }
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallSetVpRegisters `
-        -InputData $buf.ToArray() -CountOfElements $count
-
-    [PSCustomObject]@{
-        Ok = $r.Ok
-    }
-}
-
-
-function Invoke-HvCallTranslateVirtualAddress {
-    <#
-    .SYNOPSIS
-    HvCallTranslateVirtualAddress (0x0052) — translate GVA to GPA.
-
-    .DESCRIPTION
-    Translates a guest virtual address to a guest physical address
-    using the hypervisor's page table walker.
-
-    TLFS reference: [TLFS-VA]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallTranslateVirtualAddress
-
-    Input:  { PartitionId(8), VpIndex(4), Padding(4), ControlFlags(8), GvaPage(8) }
-    Output: { TranslationResult(8), GpaPage(8) }
-
-    .PARAMETER PartitionId
-    Target partition ID.
-    .PARAMETER GvaPage
-    Guest virtual address (page-aligned; bits [11:0] ignored by hypervisor).
-    .PARAMETER VpIndex
-    Virtual processor index (default 0).
-    .PARAMETER ControlFlags
-    Translation control flags (default 0). Bit 0 = validate read, Bit 1 = validate write.
-
-    .EXAMPLE
-    $r = Invoke-HvCallTranslateVirtualAddress -PartitionId 3 -GvaPage 0xFFFFF80000000000
-    if ($r.Ok) { "GPA = 0x{0:X}" -f $r.GpaPage }
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallTranslateVirtualAddress
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint64]$PartitionId,
-        [Parameter(Mandatory)][uint64]$GvaPage,
-        [uint32]$VpIndex = 0,
-        [uint64]$ControlFlags = 0
-    )
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallTranslateVirtualAddress -InputData ([ordered]@{
-        PartitionId  = [uint64]$PartitionId
-        VpIndex      = [uint32]$VpIndex
-        Padding      = [uint32]0
-        ControlFlags = [uint64]$ControlFlags
-        GvaPage      = [uint64]$GvaPage
-    }) -OutputSize 16
-
-    [PSCustomObject]@{
-        Ok                = $r.Ok
-        TranslationResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
-        GpaPage           = [BitConverter]::ToUInt64($r.OutputBytes, 8)
-    }
-}
-
-
-function Invoke-HvCallPostMessage {
-    <#
-    .SYNOPSIS
-    HvCallPostMessage (0x005C) — post a message to a connection port.
-
-    .DESCRIPTION
-    Posts a message to a Hyper-V connection port (SynIC messaging).
-
-    TLFS reference: [TLFS-SynIC]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallPostMessage
-
-    Input: { ConnectionId(4), Padding(4), MessageType(4), PayloadSize(4), Payload[240] }
-    No output data (status only).
-
-    .PARAMETER ConnectionId
-    Target connection ID.
-    .PARAMETER MessageType
-    Message type identifier.
-    .PARAMETER Payload
-    Message payload (up to 240 bytes).
-
-    .EXAMPLE
-    Invoke-HvCallPostMessage -ConnectionId 1 -MessageType 1 -Payload @(1,2,3,4)
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallPostMessage
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint32]$ConnectionId,
-        [Parameter(Mandatory)][uint32]$MessageType,
-        [byte[]]$Payload = @()
-    )
-
-    $payloadSize = [Math]::Min($Payload.Length, 240)
-    $padded = [byte[]]::new(240)
-    if ($payloadSize -gt 0) { [Array]::Copy($Payload, $padded, $payloadSize) }
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallPostMessage -InputData ([ordered]@{
-        ConnectionId = [uint32]$ConnectionId
-        Padding      = [uint32]0
-        MessageType  = [uint32]$MessageType
-        PayloadSize  = [uint32]$payloadSize
-        Payload      = [byte[]]$padded
-    })
-
-    [PSCustomObject]@{
-        Ok = $r.Ok
-    }
-}
-
-
-function Invoke-HvCallSignalEvent {
-    <#
-    .SYNOPSIS
-    HvCallSignalEvent (0x005D) — signal a Hyper-V event connection.
-
-    .DESCRIPTION
-    Signals an event on a SynIC event connection.
-
-    TLFS reference: [TLFS-SynIC]
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallSignalEvent
-
-    Input: { ConnectionId(4), FlagNumber(2), Padding(2) }
-    No output data.
-
-    .PARAMETER ConnectionId
-    Target connection ID.
-    .PARAMETER FlagNumber
-    Event flag number (0-2047).
-
-    .EXAMPLE
-    Invoke-HvCallSignalEvent -ConnectionId 1 -FlagNumber 0
-
-    .LINK
-    https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/hypercalls/HvCallSignalEvent
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][uint32]$ConnectionId,
-        [uint16]$FlagNumber = 0
-    )
-
-    $r = Invoke-HypercallRaw -CallCode $Script:HvCallCode.HvCallSignalEvent -InputData ([ordered]@{
-        ConnectionId = [uint32]$ConnectionId
-        FlagNumber   = [uint16]$FlagNumber
-        Padding      = [uint16]0
-    })
-
-    [PSCustomObject]@{
-        Ok = $r.Ok
-    }
-}
-
-#endregion
+# Note: Typed wrappers (Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa,
+# Invoke-HvCallGetPartitionId, Invoke-HvCallGetVpRegisters,
+# Invoke-HvCallSetVpRegisters, Invoke-HvCallTranslateVirtualAddress,
+# Invoke-HvCallPostMessage, Invoke-HvCallSignalEvent) were moved to
+# C:\Hvlib-HvExamples.ps1 as user-editable
+# examples. This module now exposes only the generic interface:
+# Invoke-Hypercall, Invoke-HypercallRaw, $HvCallCode.
 
 
 # ==============================================================================
 # Module Export
 # ==============================================================================
 
-# Export $HvCallCode so callers can use: $HvCallCode.ReadGpa, $HvCallCode.WriteGpa, etc.
-# Note: Export-ModuleMember -Variable exports $Script:HvCallCode into caller's scope.
-
 Export-ModuleMember -Function @(
-    # Generic
     'Invoke-Hypercall',
-    'Invoke-HypercallRaw',
-    # Typed (TLFS)
-    'Invoke-HvCallReadGpa',
-    'Invoke-HvCallWriteGpa',
-    'Invoke-HvCallGetPartitionId',
-    'Invoke-HvCallGetVpRegisters',
-    'Invoke-HvCallSetVpRegisters',
-    'Invoke-HvCallTranslateVirtualAddress',
-    'Invoke-HvCallPostMessage',
-    'Invoke-HvCallSignalEvent'
+    'Invoke-HypercallRaw'
 ) -Variable @(
     'HvCallCode'
 )
