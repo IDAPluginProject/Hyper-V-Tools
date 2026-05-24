@@ -22,7 +22,7 @@
 # Key naming follows hvgdk.h convention: HvCall<Name>
 #
 # Sources:
-#   [hvgdk.h]      LiveCloudKd SDK / Alex Ionescu HDK (www.github.com/ionescu007)
+#   [hvgdk.h]      LiveCloudKd SDK / Alex Ionescu HDK (https://github.com/ionescu007/hdk)
 #   [hvgdk_mini.h] Linux kernel / mshv headers
 #   [mu_msvm]      microsoft/mu_msvm HvGuestHypercall.h
 #   [TLFS]         Microsoft Hypervisor Top Level Functional Specification

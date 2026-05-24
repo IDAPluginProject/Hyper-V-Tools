@@ -1,6 +1,6 @@
 # ==============================================================================
 # Hvlib-Examples.ps1
-# Version: 2.0.0
+# Version: 2.1.0
 # Description: Usage examples for Hvlib PowerShell Module
 #
 # HOW TO USE:
@@ -15,7 +15,7 @@
 # example function body directly into your own scripts.
 #
 # CONFIGURATION (priority: JSON file > Registry > hardcoded defaults):
-#   JSON:     .\Hvlib-Config.json or C:\Projects\hvlib_launcher\Hvlib-Config.json
+#   JSON:     .\Hvlib-Config.json or C:\hvlib\Hvlib-Config.json
 #   Registry: HKLM:\SOFTWARE\LiveCloudKd\params (values: DllPath, VmName)
 #
 # Change Log:
@@ -31,7 +31,7 @@
 
 #requires -Version 7.0
 
-#region Configuration
+# region Configuration
 
 function Get-HvlibConfig {
     <#
@@ -95,16 +95,16 @@ function Get-HvlibConfig {
 }
 
 # Hardcoded defaults (used when JSON and Registry have no values)
-$script:DEFAULT_DLL_PATH = "C:\Distr\LiveCloudKd_public\hvlibdotnet.dll"
+$script:DEFAULT_DLL_PATH = "C:\hvlib\hvlibdotnet.dll"
 $script:DEFAULT_VM_NAME  = "Windows Server 2025"
 
 # Module version must match Hvlib.psd1 ModuleVersion
-$script:MODULE_VERSION = '1.4.0'
-$script:SCRIPT_VERSION = '2.0.0'
+$script:MODULE_VERSION = '1.6.0'
+$script:SCRIPT_VERSION = '2.1.0'
 
 #endregion
 
-#region Initialization
+# region Initialization
 
 function Initialize-HvlibExamples {
     <#
@@ -119,7 +119,7 @@ function Initialize-HvlibExamples {
     [bool] $true if initialization succeeded.
     .EXAMPLE
     . .\Hvlib-Examples.ps1
-    Initialize-HvlibExamples -DllPath "C:\Distr\LiveCloudKd_public\hvlibdotnet.dll"
+    Initialize-HvlibExamples -DllPath "C:\hvlib\hvlibdotnet.dll"
     #>
     param(
         [Parameter(Mandatory)]
@@ -146,7 +146,7 @@ function Initialize-HvlibExamples {
 #endregion
 
 # ==============================================================================
-#region Section 1: Library and Configuration
+# region Section 1: Library and Configuration
 # ==============================================================================
 
 function Example-GetHvlib {
@@ -162,7 +162,7 @@ function Example-GetHvlib {
     [bool] $true if the DLL was loaded successfully.
     .EXAMPLE
     . .\Hvlib-Examples.ps1
-    Example-GetHvlib -DllPath "C:\Distr\LiveCloudKd_public\hvlibdotnet.dll"
+    Example-GetHvlib -DllPath "C:\hvlib\hvlibdotnet.dll"
     #>
     param([string]$DllPath = $script:DllPath)
 
@@ -208,7 +208,7 @@ function Example-GetHvlibPreferredSettings {
 #endregion
 
 # ==============================================================================
-#region Section 2: Partition Enumeration and Selection
+# region Section 2: Partition Enumeration and Selection
 # ==============================================================================
 
 function Example-GetHvlibAllPartitions {
@@ -305,7 +305,7 @@ function Example-SelectHvlibPartition {
 #endregion
 
 # ==============================================================================
-#region Section 3: Partition Information Retrieval
+# region Section 3: Partition Information Retrieval
 # ==============================================================================
 
 function Example-GetHvlibPartitionName {
@@ -497,7 +497,7 @@ function Example-GetHvlibData2-MultipleProperties {
 #endregion
 
 # ==============================================================================
-#region Section 4: Physical Memory Operations
+# region Section 4: Physical Memory Operations
 # ==============================================================================
 
 function Example-GetHvlibVmPhysicalMemory-Basic {
@@ -663,7 +663,7 @@ function Example-SetHvlibVmPhysicalMemory-FromFile {
 #endregion
 
 # ==============================================================================
-#region Section 5: Virtual Memory Operations
+# region Section 5: Virtual Memory Operations
 # ==============================================================================
 
 function Example-GetHvlibVmVirtualMemory-KUserSharedData {
@@ -799,7 +799,7 @@ function Example-SetHvlibVmVirtualMemory-FromFile {
 #endregion
 
 # ==============================================================================
-#region Section 6: Process and System Information
+# region Section 6: Process and System Information
 # ==============================================================================
 
 function Example-GetHvlibProcessesList {
@@ -907,7 +907,7 @@ function Example-GetHvlibCr3-Process {
 #endregion
 
 # ==============================================================================
-#region Section 7: Resource Management
+# region Section 7: Resource Management
 # ==============================================================================
 
 function Example-CloseHvlibPartition {
@@ -955,7 +955,7 @@ function Example-CloseHvlibPartitions {
 #endregion
 
 # ==============================================================================
-#region Section 8: Utility Functions
+# region Section 8: Utility Functions
 # ==============================================================================
 
 function Example-GetHexValue {
@@ -983,7 +983,7 @@ function Example-GetHexValue {
 #endregion
 
 # ==============================================================================
-#region Section 9: VM State Control (v1.3.0)
+# region Section 9: VM State Control (v1.3.0)
 # ==============================================================================
 
 function Example-SuspendHvlibVm-PowerShell {
@@ -1141,7 +1141,7 @@ function Example-SafeMemoryAnalysis {
 #endregion
 
 # ==============================================================================
-#region Section 10: Advanced Memory Operations (v1.3.0)
+# region Section 10: Advanced Memory Operations (v1.3.0)
 # ==============================================================================
 
 function Example-GetHvlibPhysicalAddress-KernelVA {
@@ -1314,7 +1314,7 @@ function Example-SetHvlibPartitionData {
 #endregion
 
 # ==============================================================================
-#region Section 11: VM Introspection (v1.3.0)
+# region Section 11: VM Introspection (v1.3.0)
 # ==============================================================================
 
 function Example-GetHvlibMachineType {
@@ -1471,7 +1471,7 @@ function Example-GetHvlibCurrentVtl-VBSDetection {
 #endregion
 
 # ==============================================================================
-#region Section 12: CPU Register Access (v1.3.0)
+# region Section 12: CPU Register Access (v1.3.0)
 # ==============================================================================
 
 function Example-GetHvlibVpRegister-RIP {
@@ -1775,7 +1775,7 @@ function Example-SetHvlibVpRegister-Breakpoint {
 #endregion
 
 # ==============================================================================
-#region Section 13: Symbol Operations (v1.5.0)
+# region Section 13: Symbol Operations (v1.5.0)
 # ==============================================================================
 
 function Example-GetHvlibSymbolAddress {
@@ -2002,21 +2002,27 @@ function Example-GetHvlibSymbolTableLength {
 #endregion
 
 # ==============================================================================
-#region Section 14: Hypercall Operations (v1.5.0)
+# region Section 14: Hypercall Operations (v1.5.0)
 # ==============================================================================
 
-# Load typed hypercall wrappers from Hvlib.Hypercalls module
-# Provides: Invoke-HypercallRaw (generic), Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, etc.
+# Load generic hypercall interface from Hvlib.Hypercalls module:
+#   Provides: Invoke-Hypercall, Invoke-HypercallRaw, $HvCallCode
 $_hvlibBase = Split-Path (Get-Module Hvlib).Path
 Import-Module (Join-Path $_hvlibBase 'Hvlib.Hypercalls.psd1') -Force -ErrorAction SilentlyContinue
 Remove-Variable _hvlibBase
-if (-not (Get-Command Invoke-HvCallReadGpa -ErrorAction SilentlyContinue)) {
-    Write-Warning "Hvlib.Hypercalls module not found. Section 14 hypercall wrappers unavailable."
-}
 
-# --- REMOVED: Invoke-HypercallRaw, Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, etc.
-# --- These functions are now in Hvlib.Hypercalls.psm1 module.
-# --- See: C:\Program Files\WindowsPowerShell\Modules\Hvlib\Hvlib.Hypercalls.psm1
+# Load typed per-hypercall wrappers (Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, ...)
+# These now live in Hvlib-HvExamples.ps1 as user-editable examples. Dot-source
+# only the typed-wrappers region to avoid pulling all 200+ Example-HvCall* functions.
+$_examplesPath = Join-Path $PSScriptRoot 'Hvlib-HvExamples.ps1'
+if (Test-Path $_examplesPath) {
+    . $_examplesPath
+}
+Remove-Variable _examplesPath -ErrorAction SilentlyContinue
+
+if (-not (Get-Command Invoke-HvCallReadGpa -ErrorAction SilentlyContinue)) {
+    Write-Warning "Typed hypercall wrappers not loaded. Section 14 hypercall examples unavailable."
+}
 
 
 function Example-InvokeHypercall-ReadGpa {
@@ -2067,12 +2073,14 @@ function Example-InvokeHypercall-ReadGpa {
     # Get partition ID and kernel base for VA→PA translation
     $partitionId = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddPartitionId
     $kernelBase  = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddKernelBase
+
     Write-Host ("  PartitionId : {0}" -f $partitionId)
     Write-Host ("  KernelBase  : 0x{0:X}" -f $kernelBase)
 
     # Resolve a symbol to get a known virtual address
     $symName = "nt!MmCopyVirtualMemory"
     $symVA = Get-HvlibSymbolAddressDirect $handle $symName
+
     if (-not $symVA -or $symVA -eq 0) {
         Write-Warning "Symbol '$symName' not found, trying nt!KeBugCheckEx"
         $symName = "nt!KeBugCheckEx"
@@ -2103,6 +2111,7 @@ function Example-InvokeHypercall-ReadGpa {
     #   Invoke-HvCallReadGpa — named parameters, parsed PSCustomObject output.
     #   Internally calls: Invoke-HypercallRaw → InvokeHypercallBytes (C#) → SdkInvokeHypercall
     # ---------------------------------------------------------------
+
     Write-Host ""
     Write-Host "  [A] Typed wrapper: Invoke-HvCallReadGpa" -ForegroundColor Yellow
     $typed = Invoke-HvCallReadGpa -PartitionId $partitionId -BaseGpa $physAddr -ByteCount $bytesToRead
@@ -2118,6 +2127,7 @@ function Example-InvokeHypercall-ReadGpa {
     #   Same execution path, but caller must know the TLFS struct layout.
     #   Use for undocumented or new hypercalls without typed wrappers.
     # ---------------------------------------------------------------
+
     Write-Host ""
     Write-Host "  [B] Generic interface: Invoke-HypercallRaw -CallCode $($HvCallCode.HvCallReadGpa) (ReadGpa)" -ForegroundColor Yellow
     $generic = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa -InputData ([ordered]@{
@@ -2132,12 +2142,14 @@ function Example-InvokeHypercall-ReadGpa {
     $genData = [byte[]]$generic.OutputBytes[8..(8 + $bytesToRead - 1)]
     $hexGeneric = ($genData | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
     $genColor = if ($generic.Ok -and $genAccessResult -eq 0) { "Green" } else { "Red" }
+
     Write-Host ("      Ok={0}, AccessResult=0x{1:X}" -f $generic.Ok, $genAccessResult) -ForegroundColor $genColor
     Write-Host ("      Data: {0}" -f $hexGeneric) -ForegroundColor $genColor
 
     # ---------------------------------------------------------------
     # Cross-check with SdkReadPhysicalMemory / SdkReadVirtualMemory
     # ---------------------------------------------------------------
+
     Write-Host ""
     Write-Host "  Cross-check with SDK methods:" -ForegroundColor Cyan
 
@@ -2256,6 +2268,7 @@ function Example-InvokeHypercall-WriteReadGpa {
     # ===============================================================
     # Method A: Typed wrappers (known hypercall interface)
     # ===============================================================
+
     Write-Host ""
     Write-Host "  [A] Typed wrappers: Invoke-HvCallReadGpa / Invoke-HvCallWriteGpa" -ForegroundColor Yellow
 
@@ -2288,6 +2301,7 @@ function Example-InvokeHypercall-WriteReadGpa {
     # ===============================================================
     # Method B: Generic interface (unknown hypercall)
     # ===============================================================
+
     Write-Host ""
     Write-Host "  [B] Generic interface: Invoke-HypercallRaw -CallCode $($HvCallCode.HvCallReadGpa) / $($HvCallCode.HvCallWriteGpa)" -ForegroundColor Yellow
 
@@ -2343,6 +2357,7 @@ function Example-InvokeHypercall-WriteReadGpa {
     # ===============================================================
     # Cross-check: Typed vs Generic vs SDK
     # ===============================================================
+
     Write-Host ""
     Write-Host "  Cross-check:" -ForegroundColor Cyan
 
@@ -2392,7 +2407,7 @@ function Example-InvokeHypercall-WriteReadGpa {
 #endregion
 
 # ==============================================================================
-#region Workflows
+# region Workflows
 # ==============================================================================
 
 function Workflow-VmInformationReport {
@@ -2740,7 +2755,7 @@ function Workflow-SymbolAnalysis {
 #endregion
 
 # ==============================================================================
-#region Entry Point
+# region Entry Point
 # ==============================================================================
 
 function Invoke-AllExamples {
@@ -2847,6 +2862,17 @@ $script:_config = Get-HvlibConfig
 $script:DllPath = if ($script:_config.DllPath) { $script:_config.DllPath } else { $script:DEFAULT_DLL_PATH }
 $script:VmName  = if ($script:_config.VmName)  { $script:_config.VmName }  else { $script:DEFAULT_VM_NAME }
 
-Invoke-AllExamples -DllPath $script:DllPath -VmName $script:VmName
+try 
+{
+    Invoke-AllExamples -DllPath $script:DllPath -VmName $script:VmName
+}
+finally 
+{
+    # Tear down the library: close partitions + reset $Script:is_lib_loaded.
+    # NOTE: does not unload hvlibdotnet.dll from the process (Add-Type
+    # cannot be undone) — a fresh pwsh session is required to pick up
+    # a rebuilt DLL.
+    Close-Hvlib | Out-Null
+}
 
 #endregion

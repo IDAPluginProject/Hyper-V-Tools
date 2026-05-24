@@ -28,10 +28,10 @@
 
 
 # ==============================================================================
-#region Configuration & module loading
+# region Configuration & module loading
 # ==============================================================================
 
-$script:DEFAULT_DLL_PATH = "C:\Distr\LiveCloudKd_public\hvlibdotnet.dll"
+$script:DEFAULT_DLL_PATH = "C:\hvlib\hvlibdotnet.dll"
 $script:DEFAULT_VM_NAME  = "Windows Server 2025"
 
 function Get-HvlibConfig {
@@ -73,7 +73,7 @@ if (-not (Get-Command Invoke-HypercallRaw -ErrorAction SilentlyContinue)) {
 
 
 # ==============================================================================
-#region Shared helpers
+# region Shared helpers
 # ==============================================================================
 
 function Open-TestPartition {
@@ -122,7 +122,301 @@ function Write-HvResult {
 
 
 # ==============================================================================
-#region Address space management (0x0001 – 0x0003)
+# region Typed hypercall wrappers (utility functions, formerly in Hvlib.Hypercalls)
+# ==============================================================================
+# These eight functions wrap specific hypercalls with named parameters and
+# parsed output objects. They are kept here (rather than in the module) so the
+# module exports only the generic interface (Invoke-Hypercall, Invoke-HypercallRaw)
+# and users can copy/adapt any wrapper they need.
+#
+# All wrappers delegate to Invoke-HypercallRaw + $Script:HvCallCode lookup,
+# which come from the Hvlib.Hypercalls module.
+# ==============================================================================
+
+function Invoke-HvCallReadGpa {
+    <# HvCallReadGpa (0x0053) — read up to 16 bytes from guest physical address.
+       Input:  { PartitionId(8), VpIndex(4), ByteCount(4), BaseGpa(8), ControlFlags(8) }
+       Output: { AccessResult(8), Data[16] } #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint64]$PartitionId,
+        [Parameter(Mandatory)][uint64]$BaseGpa,
+        [uint32]$ByteCount = 16,
+        [uint32]$VpIndex = 0,
+        [uint64]$ControlFlags = 0
+    )
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallReadGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$PartitionId
+        VpIndex      = [uint32]$VpIndex
+        ByteCount    = [uint32]$ByteCount
+        BaseGpa      = [uint64]$BaseGpa
+        ControlFlags = [uint64]$ControlFlags
+    }) -OutputSize 24
+
+    [PSCustomObject]@{
+        Ok           = $r.Ok
+        AccessResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
+        Data         = [byte[]]$r.OutputBytes[8..(8 + $ByteCount - 1)]
+    }
+}
+
+
+function Invoke-HvCallWriteGpa {
+    <# HvCallWriteGpa (0x0054) — write up to 16 bytes to guest physical address.
+       Input:  { PartitionId(8), VpIndex(4), ByteCount(4), BaseGpa(8), ControlFlags(8), Data[16] }
+       Output: { AccessResult(8) } #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint64]$PartitionId,
+        [Parameter(Mandatory)][uint64]$BaseGpa,
+        [Parameter(Mandatory)][byte[]]$Data,
+        [uint32]$VpIndex = 0,
+        [uint64]$ControlFlags = 0
+    )
+
+    $byteCount = [Math]::Min($Data.Length, 16)
+    $padded = [byte[]]::new(16)
+    [Array]::Copy($Data, $padded, $byteCount)
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallWriteGpa -InputData ([ordered]@{
+        PartitionId  = [uint64]$PartitionId
+        VpIndex      = [uint32]$VpIndex
+        ByteCount    = [uint32]$byteCount
+        BaseGpa      = [uint64]$BaseGpa
+        ControlFlags = [uint64]$ControlFlags
+        Data         = [byte[]]$padded
+    }) -OutputSize 8
+
+    [PSCustomObject]@{
+        Ok           = $r.Ok
+        AccessResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
+    }
+}
+
+
+function Invoke-HvCallGetPartitionId {
+    <# HvCallGetPartitionId (0x0046) — get partition ID of the calling partition.
+       Output: { PartitionId(8) } #>
+    [CmdletBinding()] param()
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallGetPartitionId -OutputSize 8
+
+    [PSCustomObject]@{
+        Ok          = $r.Ok
+        PartitionId = [BitConverter]::ToUInt64($r.OutputBytes, 0)
+    }
+}
+
+
+function Invoke-HvCallGetVpRegisters {
+    <# HvCallGetVpRegisters (0x0050) — read VP registers (rep hypercall).
+       Header: { PartitionId(8), VpIndex(4), TargetVtl(1), Padding(3) } = 16
+       Rep in:  RegisterName(4) per register
+       Rep out: RegisterValue(16) per register (HV_REGISTER_VALUE is 128-bit)
+       Common codes: RIP=0x20000 RFLAGS=0x20001 RSP=0x20002 CR3=0x20014 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint64]$PartitionId,
+        [uint32]$VpIndex = 0,
+        [Parameter(Mandatory)][uint32[]]$RegisterNames,
+        [byte]$Vtl = 0
+    )
+
+    $count = $RegisterNames.Length
+    $buf = [System.IO.MemoryStream]::new()
+    $buf.Write([BitConverter]::GetBytes([uint64]$PartitionId), 0, 8)
+    $buf.Write([BitConverter]::GetBytes([uint32]$VpIndex), 0, 4)
+    $buf.WriteByte($Vtl)
+    $buf.Write([byte[]]::new(3), 0, 3)
+    foreach ($regName in $RegisterNames) {
+        $buf.Write([BitConverter]::GetBytes([uint32]$regName), 0, 4)
+    }
+
+    $outSize = $count * 16
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallGetVpRegisters `
+        -InputData $buf.ToArray() -OutputSize $outSize -CountOfElements $count
+
+    $values = [uint64[]]::new($count)
+    for ($i = 0; $i -lt $count; $i++) {
+        $values[$i] = [BitConverter]::ToUInt64($r.OutputBytes, $i * 16)
+    }
+
+    [PSCustomObject]@{
+        Ok     = $r.Ok
+        Values = $values
+    }
+}
+
+
+function Invoke-HvCallSetVpRegisters {
+    <# HvCallSetVpRegisters (0x0051) — write VP registers (rep hypercall).
+       Header: { PartitionId(8), VpIndex(4), TargetVtl(1), Padding(3) } = 16
+       Rep: Name(4) + Pad(4) + Value(8) + High64(8) = 24 each
+       Registers param: @( @{Name=[uint32]; Value=[uint64]}, ... ) #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint64]$PartitionId,
+        [uint32]$VpIndex = 0,
+        [Parameter(Mandatory)][hashtable[]]$Registers,
+        [byte]$Vtl = 0
+    )
+
+    $count = $Registers.Length
+    $buf = [System.IO.MemoryStream]::new()
+    $buf.Write([BitConverter]::GetBytes([uint64]$PartitionId), 0, 8)
+    $buf.Write([BitConverter]::GetBytes([uint32]$VpIndex), 0, 4)
+    $buf.WriteByte($Vtl)
+    $buf.Write([byte[]]::new(3), 0, 3)
+    foreach ($reg in $Registers) {
+        $buf.Write([BitConverter]::GetBytes([uint32]$reg.Name), 0, 4)
+        $buf.Write([byte[]]::new(4), 0, 4)
+        $buf.Write([BitConverter]::GetBytes([uint64]$reg.Value), 0, 8)
+        $buf.Write([byte[]]::new(8), 0, 8)
+    }
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallSetVpRegisters `
+        -InputData $buf.ToArray() -CountOfElements $count
+
+    [PSCustomObject]@{ Ok = $r.Ok }
+}
+
+
+function Invoke-HvCallTranslateVirtualAddress {
+    <# HvCallTranslateVirtualAddress (0x0052) — translate GVA to GPA.
+       Input:  { PartitionId(8), VpIndex(4), Padding(4), ControlFlags(8), GvaPage(8) }
+       Output: { TranslationResult(8), GpaPage(8) } #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint64]$PartitionId,
+        [Parameter(Mandatory)][uint64]$GvaPage,
+        [uint32]$VpIndex = 0,
+        [uint64]$ControlFlags = 0
+    )
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallTranslateVirtualAddress -InputData ([ordered]@{
+        PartitionId  = [uint64]$PartitionId
+        VpIndex      = [uint32]$VpIndex
+        Padding      = [uint32]0
+        ControlFlags = [uint64]$ControlFlags
+        GvaPage      = [uint64]$GvaPage
+    }) -OutputSize 16
+
+    [PSCustomObject]@{
+        Ok                = $r.Ok
+        TranslationResult = [BitConverter]::ToUInt64($r.OutputBytes, 0)
+        GpaPage           = [BitConverter]::ToUInt64($r.OutputBytes, 8)
+    }
+}
+
+
+function Invoke-HvCallPostMessage {
+    <# HvCallPostMessage (0x005C) — post message to a connection port (SynIC messaging).
+       Input: { ConnectionId(4), Padding(4), MessageType(4), PayloadSize(4), Payload[240] } #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint32]$ConnectionId,
+        [Parameter(Mandatory)][uint32]$MessageType,
+        [byte[]]$Payload = @()
+    )
+
+    $payloadSize = [Math]::Min($Payload.Length, 240)
+    $padded = [byte[]]::new(240)
+    if ($payloadSize -gt 0) { [Array]::Copy($Payload, $padded, $payloadSize) }
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallPostMessage -InputData ([ordered]@{
+        ConnectionId = [uint32]$ConnectionId
+        Padding      = [uint32]0
+        MessageType  = [uint32]$MessageType
+        PayloadSize  = [uint32]$payloadSize
+        Payload      = [byte[]]$padded
+    })
+
+    [PSCustomObject]@{ Ok = $r.Ok }
+}
+
+
+function Invoke-HvCallSignalEvent {
+    <# HvCallSignalEvent (0x005D) — signal a Hyper-V SynIC event connection.
+       Input: { ConnectionId(4), FlagNumber(2), Padding(2) } #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint32]$ConnectionId,
+        [uint16]$FlagNumber = 0
+    )
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallSignalEvent -InputData ([ordered]@{
+        ConnectionId = [uint32]$ConnectionId
+        FlagNumber   = [uint16]$FlagNumber
+        Padding      = [uint16]0
+    })
+
+    [PSCustomObject]@{ Ok = $r.Ok }
+}
+
+
+function Invoke-HvCallCollectLivedump {
+    <# HvCallCollectLivedump (0x008E) — private/undocumented in TLFS.
+       Triggers the hypervisor to snapshot its internal state into the
+       pre-registered _HV_CRASHDUMP_AREA_V1 region. Root partition only.
+
+       Reference: HYPER-V_HVCALL_COLLECT_LIVEDUMP.md (Hyper-V-Research-Kit)
+                  nt!HvlCollectLivedump at ntoskrnl.exe+0x589460
+
+       Input  (32 bytes): { Flags(8), BugCheckParameter[3](24) }
+       Output (16 bytes): { Handle(8), Reserved(8) }
+                            Handle is an opaque hypervisor cookie.
+
+       Flags bits (per reverse engineering — exact names private):
+         bit 0 = IncludeSecondaryData
+         bit 1 = IncludeSecureKernelArea
+         bit 2 = IncludeHypervisorStats   <-- full vs delta dump
+         bits 3..63 reserved
+
+       Status codes treated as success: 0x00 (HV_STATUS_SUCCESS)
+                                        0x33 (HV_STATUS_INSUFFICIENT_BUFFERS — partial)
+
+       Preconditions: BCD `hypervisorforcecrashdumpinitiation Yes` AND
+                      registry HKLM\...\CrashControl\HypervisorCrashDumpInitiation = 1
+                      AND running on root partition.
+
+       The crashdump area itself must have been registered earlier via
+       HvCallSetSystemProperty(0x6F); this is done automatically by
+       nt!HvlpInitializeOfflineDumpFeature at boot when the BCD flag is set. #>
+    [CmdletBinding()]
+    param(
+        [uint64]$Flags = 0x4,             # default: IncludeHypervisorStats
+        [uint64]$BugCheckParameter1 = 0,
+        [uint64]$BugCheckParameter2 = 0,
+        [uint64]$BugCheckParameter3 = 0
+    )
+
+    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallCollectLivedump -InputData ([ordered]@{
+        Flags              = [uint64]$Flags
+        BugCheckParameter1 = [uint64]$BugCheckParameter1
+        BugCheckParameter2 = [uint64]$BugCheckParameter2
+        BugCheckParameter3 = [uint64]$BugCheckParameter3
+    }) -OutputSize 16
+
+    $handle   = if ($r.OutputBytes -and $r.OutputBytes.Length -ge 8) {
+        [BitConverter]::ToUInt64($r.OutputBytes, 0)
+    } else { [uint64]0 }
+    $reserved = if ($r.OutputBytes -and $r.OutputBytes.Length -ge 16) {
+        [BitConverter]::ToUInt64($r.OutputBytes, 8)
+    } else { [uint64]0 }
+
+    [PSCustomObject]@{
+        Ok       = $r.Ok        # true if HV_STATUS_SUCCESS
+        Handle   = $handle      # opaque cookie; nt!HvlCollectLivedump uses it indirectly
+        Reserved = $reserved
+    }
+}
+
+#endregion
+
+
+# ==============================================================================
+# region Address space management (0x0001 – 0x0003)
 # ==============================================================================
 
 function Example-HvCallSwitchVirtualAddressSpace {
@@ -173,7 +467,7 @@ function Example-HvCallFlushVirtualAddressList {
 
 
 # ==============================================================================
-#region Runtime / power (0x0004 – 0x0007)
+# region Runtime / power (0x0004 – 0x0007)
 # ==============================================================================
 
 function Example-HvCallGetLogicalProcessorRunTime {
@@ -238,7 +532,7 @@ function Example-HvCallUpdateMicrocode {
 
 
 # ==============================================================================
-#region VTL / IPI / flush-ex / patching (0x0008 – 0x001C)
+# region VTL / IPI / flush-ex / patching (0x0008 – 0x001C)
 # ==============================================================================
 
 function Example-HvCallNotifyLongSpinWait {
@@ -525,7 +819,7 @@ function Example-HvCallGetPerfRegister {
 
 
 # ==============================================================================
-#region Partition management (0x0040 – 0x0047)
+# region Partition management (0x0040 – 0x0047)
 # ==============================================================================
 
 function Example-HvCallCreatePartition {
@@ -650,7 +944,7 @@ function Example-HvCallGetNextChildPartition {
 
 
 # ==============================================================================
-#region Memory management (0x0048 – 0x004C)
+# region Memory management (0x0048 – 0x004C)
 # ==============================================================================
 
 function Example-HvCallDepositMemory {
@@ -735,7 +1029,7 @@ function Example-HvCallUnmapGpaPages {
 
 
 # ==============================================================================
-#region Intercept / VP / Registers (0x004D – 0x0054)
+# region Intercept / VP / Registers (0x004D – 0x0054)
 # ==============================================================================
 
 function Example-HvCallInstallIntercept {
@@ -878,7 +1172,7 @@ function Example-HvCallWriteGpa {
 
 
 # ==============================================================================
-#region Interrupts (0x0055 – 0x0056)
+# region Interrupts (0x0055 – 0x0056)
 # ==============================================================================
 
 function Example-HvCallAssertVirtualInterruptDeprecated {
@@ -915,7 +1209,7 @@ function Example-HvCallClearVirtualInterrupt {
 
 
 # ==============================================================================
-#region Ports / messaging (0x0057 – 0x005D)
+# region Ports / messaging (0x0057 – 0x005D)
 # ==============================================================================
 
 function Example-HvCallCreatePortDeprecated {
@@ -1022,7 +1316,7 @@ function Example-HvCallSignalEvent {
 
 
 # ==============================================================================
-#region Partition state (0x005E – 0x005F)
+# region Partition state (0x005E – 0x005F)
 # ==============================================================================
 
 function Example-HvCallSavePartitionState {
@@ -1059,7 +1353,7 @@ function Example-HvCallRestorePartitionState {
 
 
 # ==============================================================================
-#region Event logging (0x0060 – 0x0068)
+# region Event logging (0x0060 – 0x0068)
 # ==============================================================================
 
 function Example-HvCallInitializeEventLogBufferGroup {
@@ -1170,7 +1464,7 @@ function Example-HvCallFlushEventLogBuffer {
 
 
 # ==============================================================================
-#region Debugging (0x0069 – 0x006B)
+# region Debugging (0x0069 – 0x006B)
 # ==============================================================================
 
 function Example-HvCallPostDebugData {
@@ -1214,7 +1508,7 @@ function Example-HvCallResetDebugSession {
 
 
 # ==============================================================================
-#region Statistics (0x006C – 0x006D)
+# region Statistics (0x006C – 0x006D)
 # ==============================================================================
 
 function Example-HvCallMapStatsPage {
@@ -1249,7 +1543,7 @@ function Example-HvCallUnmapStatsPage {
 
 
 # ==============================================================================
-#region V1 extended / test (0x006E – 0x0075)
+# region V1 extended / test (0x006E – 0x0075)
 # ==============================================================================
 
 function Example-HvCallMapSparseGpaPages {
@@ -1357,7 +1651,7 @@ function Example-HvCallPerfNopOutput {
 
 
 # ==============================================================================
-#region V2 logical processor / NUMA / system (0x0076 – 0x007B)
+# region V2 logical processor / NUMA / system (0x0076 – 0x007B)
 # ==============================================================================
 
 function Example-HvCallAddLogicalProcessor {
@@ -1442,7 +1736,7 @@ function Example-HvCallGetSystemProperty {
 
 
 # ==============================================================================
-#region Device interrupts (0x007C - 0x0080)
+# region Device interrupts (0x007C - 0x0080)
 # ==============================================================================
 
 function Example-HvCallMapDeviceInterrupt {
@@ -1514,7 +1808,7 @@ function Example-HvCallAssertDeviceInterrupt {
 
 
 # ==============================================================================
-#region Device / power / MCA (0x0082 - 0x008F)
+# region Device / power / MCA (0x0082 - 0x008F)
 # ==============================================================================
 
 function Example-HvCallAttachDevice {
@@ -1678,14 +1972,31 @@ function Example-HvCallScrubPartition {
 }
 
 function Example-HvCallCollectLivedump {
-    <# .SYNOPSIS HvCallCollectLivedump (0x008E). #>
+    <# .SYNOPSIS HvCallCollectLivedump (0x008E) — root partition only, requires BCD setting.
+       Input:  { Flags(8), BugCheckParameter[3](24) } = 32 bytes
+       Output: { Handle(8), Reserved(8) } = 16 bytes
+       Success: HV_STATUS_SUCCESS (0x00) or HV_STATUS_INSUFFICIENT_BUFFERS (0x33, partial).
+       See HYPER-V_HVCALL_COLLECT_LIVEDUMP.md for full workflow. #>
     param([string]$VmName = $script:VmName)
     $ctx = Open-TestPartition $VmName
     if (-not $ctx) { return }
 
-    $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallCollectLivedump -InputData ([byte[]]::new(32)) -OutputSize 4096
+    # Precondition: HypervisorCrashDumpInitiation must be enabled via BCD/registry.
+    $crashCtl = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' -ErrorAction SilentlyContinue
+    $enabled  = [bool]($crashCtl.HypervisorCrashDumpInitiation)
+    if (-not $enabled) {
+        Write-Host "  [SKIP] HvCallCollectLivedump  0x008E   precondition not met:" -ForegroundColor Yellow
+        Write-Host "         HKLM\...\CrashControl\HypervisorCrashDumpInitiation = 0" -ForegroundColor Yellow
+        Write-Host "         To enable: bcdedit /set {default} hypervisorforcecrashdumpinitiation Yes" -ForegroundColor Yellow
+        Close-HvlibPartition -handle $ctx.Handle
+        return [PSCustomObject]@{ Ok = $false; Skipped = $true }
+    }
 
-    Write-HvResult "HvCallCollectLivedump" 0x008E $r.Ok
+    # Flags=0x4 = IncludeHypervisorStats (full dump). BugCheckParam[1..3]=0 (no specific bugcheck context).
+    $r = Invoke-HvCallCollectLivedump -Flags 0x4
+
+    $extra = "Handle=0x{0:X16}" -f $r.Handle
+    Write-HvResult "HvCallCollectLivedump" 0x008E $r.Ok $extra
     Close-HvlibPartition -handle $ctx.Handle
     return $r
 }
@@ -1707,7 +2018,7 @@ function Example-HvCallDisableHypervisor {
 
 
 # ==============================================================================
-#region Sparse GPA / intercept result / assert V2 (0x0090 - 0x009C)
+# region Sparse GPA / intercept result / assert V2 (0x0090 - 0x009C)
 # ==============================================================================
 
 function Example-HvCallModifySparseGpaPages {
@@ -1884,7 +2195,7 @@ function Example-HvCallSetPowerProperty {
 
 
 # ==============================================================================
-#region PASID (0x009D - 0x00A9)
+# region PASID (0x009D - 0x00A9)
 # ==============================================================================
 
 function Example-HvCallCreatePasidSpace {
@@ -2060,7 +2371,7 @@ function Example-HvCallSetDevicePrqProperty {
 
 
 # ==============================================================================
-#region Physical device / translate-ex / GPA attributes / device domain /
+# region Physical device / translate-ex / GPA attributes / device domain /
 #       CPU groups / memory / GPA commit (0x00AA - 0x00BF)
 # ==============================================================================
 
@@ -2376,7 +2687,7 @@ function Example-HvCallUncommitGpaPages {
 
 
 # ==============================================================================
-#region Direct messaging / dispatch / IOMMU / device domain V2 / VTL range /
+# region Direct messaging / dispatch / IOMMU / device domain V2 / VTL range /
 #       sparse GPA host access / isolation / VP state / IPT / SNP /
 #       extended partition property / extended hypercalls (0x00C0 - 0x8006)
 # ==============================================================================
@@ -3344,7 +3655,7 @@ function Example-HvExtCallMemoryHeatHintAsync {
 
 
 # ==============================================================================
-#region Invoke-AllHvExamples — run every example and print summary
+# region Invoke-AllHvExamples — run every example and print summary
 # ==============================================================================
 
 function Invoke-AllHvExamples {
@@ -3419,5 +3730,15 @@ function Invoke-AllHvExamples {
 #endregion
 
 
-# --- Auto-run ---
-Invoke-AllHvExamples -DllPath $script:DllPath -VmName $script:VmName
+# --- Auto-run (skipped when the file is dot-sourced) ---
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-AllHvExamples -DllPath $script:DllPath -VmName $script:VmName
+}
+
+
+# --- Cleanup: release native partition handles and reset Hvlib state.
+# NOTE: hvlibdotnet.dll stays loaded in the process (Add-Type cannot be
+# undone in default AssemblyLoadContext) - a fresh pwsh session is required
+# to pick up a rebuilt DLL. The guard skips silently if Hvlib module is not
+# loaded in this scope (e.g. script aborted before Get-Hvlib).
+if (Get-Command Close-Hvlib -ErrorAction SilentlyContinue) { Close-Hvlib | Out-Null }
