@@ -6,7 +6,9 @@
 # HOW TO USE:
 #   1. Place Hvlib-Config.json next to this script (or edit defaults below)
 #   2. Run the entire script:  pwsh -NoProfile -File Hvlib-Examples.ps1
-#   3. Or dot-source and run individual examples:
+#   3. Or load it with the dot (.) operator and run individual examples
+#      (the leading "." runs the script in your current scope so its
+#      functions stay defined in the session):
 #        . .\Hvlib-Examples.ps1
 #        Example-SymbolLookupDirect -VmName "Windows Server 2025"
 #
@@ -2007,16 +2009,30 @@ function Example-GetHvlibSymbolTableLength {
 
 # Load generic hypercall interface from Hvlib.Hypercalls module:
 #   Provides: Invoke-Hypercall, Invoke-HypercallRaw, $HvCallCode
-$_hvlibBase = Split-Path (Get-Module Hvlib).Path
-Import-Module (Join-Path $_hvlibBase 'Hvlib.Hypercalls.psd1') -Force -ErrorAction SilentlyContinue
-Remove-Variable _hvlibBase
+# Hvlib.Hypercalls.psd1 lives inside the Hvlib module folder (not its own
+# module dir), so import it by full path. Use -ListAvailable to resolve the
+# Hvlib module path even when it has not been imported into the current scope.
+$_hvlibModule = Get-Module Hvlib -ListAvailable | Select-Object -First 1
+if ($_hvlibModule) {
+    $_hyperPsd1 = Join-Path (Split-Path $_hvlibModule.Path) 'Hvlib.Hypercalls.psd1'
+    if (Test-Path $_hyperPsd1) {
+        Import-Module $_hyperPsd1 -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Variable _hyperPsd1 -ErrorAction SilentlyContinue
+}
+Remove-Variable _hvlibModule -ErrorAction SilentlyContinue
 
 # Load typed per-hypercall wrappers (Invoke-HvCallReadGpa, Invoke-HvCallWriteGpa, ...)
-# These now live in Hvlib-HvExamples.ps1 as user-editable examples. Dot-source
-# only the typed-wrappers region to avoid pulling all 200+ Example-HvCall* functions.
+# These now live in Hvlib-HvExamples.ps1 as user-editable examples. Load that
+# file with the dot (.) operator (runs the lines in our current scope so the
+# functions stay defined). Critically, set HvExamples_SkipAutoRun first so
+# Hvlib-HvExamples.ps1's tail block does NOT auto-execute the full 222-call
+# sweep just because we wanted the function definitions.
 $_examplesPath = Join-Path $PSScriptRoot 'Hvlib-HvExamples.ps1'
 if (Test-Path $_examplesPath) {
+    $script:HvExamples_SkipAutoRun = $true
     . $_examplesPath
+    Remove-Variable -Scope Script -Name HvExamples_SkipAutoRun -ErrorAction SilentlyContinue
 }
 Remove-Variable _examplesPath -ErrorAction SilentlyContinue
 

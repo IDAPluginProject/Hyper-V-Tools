@@ -6,7 +6,7 @@
     using Hvlib SDK primitives instead of raw DeviceIoControl/P/Invoke.
 
 .DESCRIPTION
-    Stripped-down version of Invoke-SecurekernelIUMDebug-Lite.ps1 that does ONLY
+    Stripped-down version of Invoke-SecurekernelIUMDebug.ps1 that does ONLY
     the patch operation, in two phases:
 
       Phase 1 (analysis):
@@ -92,12 +92,14 @@ if ($missing.Count -gt 0) {
 ### RET location; any VTL1 CPU executing this path will get stuck spinning here,
 ### which lets us read its RIP/CR3 via Get-HvlibVpRegister.
 ###
+
 $PATCH_CODE  = [byte[]]@(0xF3, 0x90, 0xEB, 0xFC, 0xC3)
 
 ###
 ### Five RET bytes - safe landing pad that effectively no-ops the trap when we
 ### need to revert it (the trapped VP will return; subsequent passes also return).
 ###
+
 $REVERT_CODE = [byte[]]@(0xC3, 0xC3, 0xC3, 0xC3, 0xC3)
 
 $PAGE_SIZE = 0x1000
@@ -105,12 +107,14 @@ $PAGE_SIZE = 0x1000
 ###
 ### Hyper-V register codes (TLFS HV_REGISTER_NAME values)
 ###
+
 $HvX64RegisterRip = 0x00020010
 $HvX64RegisterCr3 = 0x00040002
 
 ###
 ### Console colour palette
 ###
+
 $COLOR_INFO    = 'Cyan'
 $COLOR_SUCCESS = 'Green'
 $COLOR_WARN    = 'Yellow'
@@ -121,6 +125,7 @@ $COLOR_DEBUG   = 'DarkGray'
 ### x86-64 page-table PFN mask: bits 12..51. Bits 52..55 are AVL/software and
 ### Hyper-V uses them for VTL metadata - masking them in corrupts the PA.
 ###
+
 $X64_PFN_MASK_4K = 0xFFFFFFFFFF000
 $X64_PFN_MASK_2M = 0xFFFFFFFE00000
 $X64_PFN_MASK_1G = 0xFFFFFC0000000
@@ -128,17 +133,19 @@ $X64_PFN_MASK_1G = 0xFFFFFC0000000
 ###
 ### Patch-finder magic: STATUS_ACCESS_DENIED (0xC0000022) in little-endian
 ###
+
 $STATUS_ACCESS_DENIED_LE = [byte[]]@(0x22, 0x00, 0x00, 0xC0)
 
 ###
 ### Known offsets used for enum-base rebase fallback
 ###
+
 $IUM_INVOKE_SECURE_SERVICE_RVA = 0x13B20
 
 #endregion
 
 
-#region Low-level helpers (VTL protection, physical read, page walk)
+# region Low-level helpers (VTL protection, physical read, page walk)
 ### ==============================================================================
 
 function Invoke-HvlibModifyVtlProtection {
@@ -195,6 +202,7 @@ function Resolve-PageTableAddress {
     ###
     ### Decompose VA into the four 9-bit table indexes (PML4, PDPT, PD, PT)
     ###
+
     $pml4Idx = ($VirtualAddress -shr 39) -band 0x1FF
     $pdptIdx = ($VirtualAddress -shr 30) -band 0x1FF
     $pdIdx   = ($VirtualAddress -shr 21) -band 0x1FF
@@ -203,12 +211,14 @@ function Resolve-PageTableAddress {
     ###
     ### Level 4: PML4 entry
     ###
+
     $pml4e = Read-PhysicalUInt64 -Handle $Handle -Address ($DirectoryTableBase + [uint64]($pml4Idx * 8))
     if ($pml4e -eq 0) { return [uint64]0 }
 
     ###
     ### Level 3: PDPT entry; PS=1 means a 1 GB page maps directly here
     ###
+
     $pdpte = Read-PhysicalUInt64 -Handle $Handle -Address (($pml4e -band $X64_PFN_MASK_4K) + [uint64]($pdptIdx * 8))
     if ($pdpte -eq 0) { return [uint64]0 }
     if (($pdpte -band (1 -shl 7)) -ne 0) {
@@ -218,6 +228,7 @@ function Resolve-PageTableAddress {
     ###
     ### Level 2: PD entry; PS=1 means a 2 MB page maps directly here
     ###
+
     $pde = Read-PhysicalUInt64 -Handle $Handle -Address (($pdpte -band $X64_PFN_MASK_4K) + [uint64]($pdIdx * 8))
     if ($pde -eq 0) { return [uint64]0 }
     if (($pde -band (1 -shl 7)) -ne 0) {
@@ -227,6 +238,7 @@ function Resolve-PageTableAddress {
     ###
     ### Level 1: PT entry - the standard 4 KB-page case
     ###
+
     $pte = Read-PhysicalUInt64 -Handle $Handle -Address (($pde -band $X64_PFN_MASK_4K) + [uint64]($ptIdx * 8))
     if ($pte -eq 0) { return [uint64]0 }
     return ($pte -band $X64_PFN_MASK_4K) + ($VirtualAddress -band 0xFFF)
@@ -249,7 +261,9 @@ function Read-SecurekernelVirtualMemory {
     ###
     ### Primary path
     ###
-    try {
+
+    try 
+    {
         $sdkData = Get-HvlibVmVirtualMemory -prtnHandle $Handle -start_position $VirtualAddress `
                        -size ([uint64]$Size) -ErrorAction Stop 2>$null
     } catch { $sdkData = $null }
@@ -258,6 +272,7 @@ function Read-SecurekernelVirtualMemory {
     ###
     ### Fallback: page-by-page walk
     ###
+
     $result    = [byte[]]::new($Size)
     $offset    = 0
     $remaining = $Size
@@ -276,6 +291,7 @@ function Read-SecurekernelVirtualMemory {
         $offset    += $chunkSize
         $remaining -= $chunkSize
     }
+
     return $result
 }
 
@@ -333,6 +349,7 @@ function Get-IumServiceSymbols {
     ###
     ### Enumeration fallback
     ###
+
     if ($iumVA -eq 0 -or $skpsVA -eq 0) {
         Write-Host "  Direct lookup missed - trying full enumeration..." -ForegroundColor $COLOR_WARN
         $allSyms = Get-HvlibAllSymbols -PartitionHandle $PartitionHandle -DriverName "securekernel"
@@ -369,6 +386,7 @@ function Get-IumServiceSymbols {
     ###
     ### Validate addresses are within the image (catches stale symbol cache)
     ###
+
     $imageSize = [uint64]$ImageBytes.Length
     if ($iumVA -lt $SecurekernelBase -or ($iumVA - $SecurekernelBase) -ge $imageSize) {
         Write-Error "IumInvokeSecureService VA 0x$($iumVA.ToString('X')) outside image - stale symbols, restart VM"
@@ -417,18 +435,22 @@ function Find-AccessDeniedPatchTarget {
         ###
         ### We're looking for: lea reg, [rip + offset_to_SkpsIsProcessDebuggingEnabled]
         ###
+
         if ($insn.Mnemonic -ne 'lea') { continue }
         $leaTarget = Get-CapstoneLeaRipTarget -Insn $insn
         if ($leaTarget -eq 0) { continue }
+
         ###
         ### If SkpsRVA is known, require exact match. Else accept any LEA [rip+X]
         ### and rely on the error-block pattern below to disambiguate.
         ###
+
         if ($SkpsRVA -ne 0 -and $leaTarget -ne $SkpsRVA) { continue }
 
         ###
         ### Walk forward up to 40 instructions looking for the JMP into the error block
         ###
+
         for ($jdx = $idx + 1; $jdx -lt [Math]::Min($idx + 40, $Instructions.Count); $jdx++) {
             $jInsn = $Instructions[$jdx]
             if ($jInsn.Mnemonic -ne 'jmp') { continue }
@@ -440,6 +462,7 @@ function Find-AccessDeniedPatchTarget {
             ###
             ### Check 1: NOP sled => patch already applied
             ###
+
             $nopSled = Test-NopSled -DumpBytes $DumpBytes -At $fetchOffset
             if ($nopSled.IsSled) {
                 return [PSCustomObject]@{
@@ -453,6 +476,7 @@ function Find-AccessDeniedPatchTarget {
             ###
             ### Check 2: STATUS_ACCESS_DENIED + short JMP => the patch target
             ###
+            
             $errorBlock = Find-AccessDeniedBlock -DumpBytes $DumpBytes -At $fetchOffset
             if ($errorBlock.Found) {
                 return [PSCustomObject]@{
@@ -814,20 +838,23 @@ function Wait-Vtl1TrapHit {
     $ripMax = $RetOffsetInPage + 0x20
 
     for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
-        for ($vp = 0; $vp -lt $NumCpu; $vp++) {
-            $cr3Reg = Get-HvlibVpRegister -PartitionHandle $VmHandle -VpIndex $vp `
-                          -RegisterCode $HvX64RegisterCr3 -Vtl ([Hvlibdotnet.Hvlib+VTL_LEVEL]::Vtl1)
-            $ripReg = Get-HvlibVpRegister -PartitionHandle $VmHandle -VpIndex $vp `
-                          -RegisterCode $HvX64RegisterRip -Vtl ([Hvlibdotnet.Hvlib+VTL_LEVEL]::Vtl1)
+        for ($vp = 0; $vp -lt $NumCpu; $vp++) 
+        {
+            $cr3Reg = Get-HvlibVpRegister -PartitionHandle $VmHandle -VpIndex $vp -RegisterCode $HvX64RegisterCr3 -Vtl ([Hvlibdotnet.Hvlib+VTL_LEVEL]::Vtl1)
+            $ripReg = Get-HvlibVpRegister -PartitionHandle $VmHandle -VpIndex $vp -RegisterCode $HvX64RegisterRip -Vtl ([Hvlibdotnet.Hvlib+VTL_LEVEL]::Vtl1)
+
             if ($null -eq $cr3Reg -or $null -eq $ripReg) { continue }
 
             $ripLow = [int]($ripReg.Reg64 -band 0xFFF)
-            if ($ripLow -gt $ripMin -and $ripLow -lt $ripMax) {
+
+            if ($ripLow -gt $ripMin -and $ripLow -lt $ripMax) 
+            {
                 $finalSK = ($ripReg.Reg64 -band 0xFFFFFFFFFFFFF000) - $RetPageBase
                 Write-Host ("  VP{0} trapped! RIP=0x{1:X16} CR3=0x{2:X16}" -f $vp, $ripReg.Reg64, $cr3Reg.Reg64) -ForegroundColor $COLOR_SUCCESS
                 return [PSCustomObject]@{ Trapped = $true; FinalSK = [uint64]$finalSK; GuestCr3 = [uint64]$cr3Reg.Reg64 }
             }
         }
+
         Start-Sleep -Milliseconds 10
     }
     return [PSCustomObject]@{ Trapped = $false; FinalSK = [uint64]0; GuestCr3 = [uint64]0 }
@@ -935,7 +962,7 @@ function Invoke-Phase2Patch {
 #region Main
 ### ==============================================================================
 
-Write-Host "`n  Secure Kernel IUM Debug Tool (Superlite)`n" -ForegroundColor $COLOR_INFO
+Write-Host "`n  Secure Kernel IUM Debug Tool`n" -ForegroundColor $COLOR_INFO
 
 $cfg = Resolve-ScriptConfig -DllPath $DllPath -VmName $VmName
 if ($null -eq $cfg) { return }

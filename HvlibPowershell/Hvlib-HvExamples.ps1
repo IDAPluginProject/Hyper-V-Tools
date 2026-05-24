@@ -6,7 +6,9 @@
 #              input structs and checks HV_STATUS_SUCCESS (Ok=$true).
 #
 # HOW TO USE:
-#   1. Dot-source:  . .\Hvlib-HvExamples.ps1
+#   1. Load with the dot (.) operator — the leading "." runs the script
+#      in the current scope so all functions stay defined in your session:
+#          . .\Hvlib-HvExamples.ps1
 #   2. Individual:  Example-HvCallReadGpa -VmName "Windows Server 2025"
 #   3. Run all:     Invoke-AllHvExamples -VmName "Windows Server 2025"
 #
@@ -35,10 +37,11 @@ $script:DEFAULT_DLL_PATH = "C:\hvlib\hvlibdotnet.dll"
 $script:DEFAULT_VM_NAME  = "Windows Server 2025"
 
 function Get-HvlibConfig {
+    # Sources: .\Hvlib-Config.json > C:\hvlib\Hvlib-Config.json > registry.
     $config = @{ DllPath = $null; VmName = $null }
     $jsonPaths = @(
         (Join-Path $PSScriptRoot "Hvlib-Config.json"),
-        "C:\Projects\hvlib_launcher\Hvlib-Config.json"
+        "C:\hvlib\Hvlib-Config.json"
     )
     foreach ($p in $jsonPaths) {
         if (Test-Path $p) {
@@ -62,10 +65,24 @@ $script:DllPath = if ($script:_config.DllPath) { $script:_config.DllPath } else 
 $script:VmName  = if ($script:_config.VmName)  { $script:_config.VmName }  else { $script:DEFAULT_VM_NAME }
 
 Import-Module Hvlib -Force -ErrorAction SilentlyContinue
+
+# Hvlib.Hypercalls is not a stand-alone module - the .psd1/.psm1 live inside
+# the Hvlib module directory. Try Import-Module by simple name first (works
+# if it has been placed in a PSModulePath dir), then fall back to direct
+# .psd1 path inside the resolved Hvlib module folder.
 Import-Module Hvlib.Hypercalls -Force -ErrorAction SilentlyContinue
+if (-not (Get-Command Invoke-HypercallRaw -ErrorAction SilentlyContinue)) {
+    $hvm = Get-Module Hvlib -ListAvailable | Select-Object -First 1
+    if ($hvm) {
+        $hyperPsd1 = Join-Path (Split-Path $hvm.Path) 'Hvlib.Hypercalls.psd1'
+        if (Test-Path $hyperPsd1) {
+            Import-Module $hyperPsd1 -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 if (-not (Get-Command Invoke-HypercallRaw -ErrorAction SilentlyContinue)) {
-    Write-Warning "Hvlib.Hypercalls module not found."
+    Write-Warning "Hvlib.Hypercalls module not found - examples will not run. Make sure Hvlib module is installed (Get-Module Hvlib -ListAvailable should show it)."
     return
 }
 
@@ -77,8 +94,27 @@ if (-not (Get-Command Invoke-HypercallRaw -ErrorAction SilentlyContinue)) {
 # ==============================================================================
 
 function Open-TestPartition {
-    <# Opens partition, returns context hashtable with Handle, PartitionId, PhysAddr, SymVA. #>
-    param([string]$VmName = $script:VmName)
+    <#
+    .SYNOPSIS
+        Opens partition, returns context hashtable with Handle, PartitionId,
+        KernelBase, and optionally SymVA/PhysAddr.
+
+    .DESCRIPTION
+        By default SymVA/PhysAddr are 0 to keep this fast - Get-HvlibSymbolAddressDirect
+        downloads PDBs from the Microsoft symbol server on first call and can
+        hang for minutes (or forever without internet/cache). Only 4 examples
+        actually need a real symbol (HvCallReadGpa, HvCallTranslateVirtualAddress,
+        HvCallTranslateVirtualAddressEx, HvCallModifyVtlProtectionMask) - they
+        opt in via -ResolveSymbol.
+
+    .PARAMETER ResolveSymbol
+        If set, resolve nt!KeBugCheckEx -> SymVA and PhysAddr. Slow on first
+        call per session (downloads PDB).
+    #>
+    param(
+        [string]$VmName = $script:VmName,
+        [switch]$ResolveSymbol
+    )
 
     # Ensure DLL is loaded (idempotent — Get-Hvlib returns true if already loaded)
     if (-not $script:_hvlibInitialized) {
@@ -93,18 +129,24 @@ function Open-TestPartition {
     $partitionId = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddPartitionId
     $kernelBase  = Get-HvlibData2 -PartitionHandle $handle -InformationClass $IC::HvddKernelBase
 
-    $symVA   = Get-HvlibSymbolAddressDirect $handle "nt!KeBugCheckEx"
+    $symVA   = [uint64]0
     $physAddr = [uint64]0
-    if ($symVA -and $symVA -ne 0) {
-        $physAddr = Get-HvlibPhysicalAddress -PartitionHandle $handle -VirtualAddress $symVA
+    if ($ResolveSymbol) {
+        try {
+            $resolved = Get-HvlibSymbolAddressDirect $handle "nt!KeBugCheckEx" -ErrorAction SilentlyContinue
+            if ($resolved) { $symVA = [uint64]$resolved }
+        } catch {}
+        if ($symVA -ne 0) {
+            try { $physAddr = [uint64](Get-HvlibPhysicalAddress -PartitionHandle $handle -VirtualAddress $symVA) } catch {}
+        }
     }
 
     @{
         Handle      = $handle
         PartitionId = [uint64]$partitionId
         KernelBase  = [uint64]$kernelBase
-        SymVA       = [uint64]$symVA
-        PhysAddr    = [uint64]$physAddr
+        SymVA       = $symVA
+        PhysAddr    = $physAddr
     }
 }
 
@@ -586,7 +628,7 @@ function Example-HvCallSendSyntheticClusterIpi {
 function Example-HvCallModifyVtlProtectionMask {
     <# .SYNOPSIS HvCallModifyVtlProtectionMask (0x000C) — rep, set VTL page protection. Input: Header { PartitionId(8), MapFlags(4), TargetVtl(4) } + Rep { GpaPageNumber(8) } #>
     param([string]$VmName = $script:VmName)
-    $ctx = Open-TestPartition $VmName
+    $ctx = Open-TestPartition $VmName -ResolveSymbol
     if (-not $ctx) { return }
     $gpaPage = if ($ctx.PhysAddr) { [uint64]($ctx.PhysAddr -shr 12) } else { [uint64]0 }
     $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallModifyVtlProtectionMask -InputData ([ordered]@{
@@ -1116,7 +1158,7 @@ function Example-HvCallSetVpRegisters {
 function Example-HvCallTranslateVirtualAddress {
     <# .SYNOPSIS HvCallTranslateVirtualAddress (0x0052) — typed wrapper. #>
     param([string]$VmName = $script:VmName)
-    $ctx = Open-TestPartition $VmName
+    $ctx = Open-TestPartition $VmName -ResolveSymbol
     if (-not $ctx) { return }
     $r = Invoke-HvCallTranslateVirtualAddress -PartitionId $ctx.PartitionId -GvaPage $ctx.SymVA
     $extra = if ($r.Ok) { "GpaPage=0x{0:X}" -f $r.GpaPage } else { "" }
@@ -1128,7 +1170,7 @@ function Example-HvCallTranslateVirtualAddress {
 function Example-HvCallReadGpa {
     <# .SYNOPSIS HvCallReadGpa (0x0053) — typed wrapper, 16 bytes from known GPA. #>
     param([string]$VmName = $script:VmName)
-    $ctx = Open-TestPartition $VmName
+    $ctx = Open-TestPartition $VmName -ResolveSymbol
     if (-not $ctx) { return }
     $r = Invoke-HvCallReadGpa -PartitionId $ctx.PartitionId -BaseGpa $ctx.PhysAddr -ByteCount 16
     $extra = ""
@@ -2404,7 +2446,7 @@ function Example-HvCallSetPhysicalDeviceProperty {
 function Example-HvCallTranslateVirtualAddressEx {
     <# .SYNOPSIS HvCallTranslateVirtualAddressEx (0x00AC). #>
     param([string]$VmName = $script:VmName)
-    $ctx = Open-TestPartition $VmName
+    $ctx = Open-TestPartition $VmName -ResolveSymbol
     if (-not $ctx) { return }
 
     $r = Invoke-HypercallRaw -CallCode $HvCallCode.HvCallTranslateVirtualAddressEx -InputData ([ordered]@{
@@ -3658,10 +3700,114 @@ function Example-HvExtCallMemoryHeatHintAsync {
 # region Invoke-AllHvExamples — run every example and print summary
 # ==============================================================================
 
+# ==============================================================================
+# Dangerous hypercalls — known to crash / hang the guest VM, modify partition
+# lifecycle, change VTL protection, manipulate memory mappings, or trigger
+# power-state transitions. They still RUN, but at the END of the sweep after
+# all safer query/info hypercalls, so the user can see the bulk results first
+# and Ctrl+C before the risky ones if desired.
+# Bare hypercall names (without "Example-" prefix); both Example-HvCallX and
+# Example-HvExtCallX naming patterns are matched.
+# ==============================================================================
+$script:DangerousHypercalls = @(
+    # Partition lifecycle - finalize/delete cannot be undone
+    'CreatePartition', 'InitializePartition', 'FinalizePartition', 'DeletePartition',
+    'ScrubPartition', 'SavePartitionState', 'RestorePartitionState',
+
+    # VP lifecycle - removing or absorbing a running VP can wedge the guest
+    'CreateVp', 'DeleteVp', 'StartVirtualProcessor',
+    'SubsumeInitializedMemory', 'SubsumeVp', 'DestroySubsumedContext',
+    'RequestProcessorHalt', 'InjectSyntheticMachineCheck',
+
+    # VTL transitions / protection - can lock out VTL0 from its own memory
+    'EnablePartitionVtl', 'DisablePartitionVtl',
+    'EnableVpVtl', 'DisableVpVtl', 'VtlCall', 'VtlReturn',
+    'ModifyVtlProtectionMask', 'ModifyVtlProtectionMaskRange',
+
+    # Memory ownership / mapping - mis-mapping crashes the guest
+    'MapGpaPages', 'UnmapGpaPages',
+    'MapSparseGpaPages', 'ModifySparseGpaPages',
+    'AcceptGpaPages', 'UnacceptGpaPages',
+    'PrecommitGpaPages', 'UncommitGpaPages',
+    'LockSparseGpaPageMapping', 'UnlockSparseGpaPageMapping',
+    'ModifySparseGpaPageHostVisibility',
+    'SetGpaPageAttributes',
+    'AddPhysicalMemory', 'RemovePhysicalMemory',
+    'WithdrawMemory', 'DepositMemory',
+    'AcquireSparseGpaPageHostAccess', 'ReleaseSparseGpaPageHostAccess',
+    'AcquireSparseSpaPageHostAccess', 'ReleaseSparseSpaPageHostAccess',
+
+    # Address-space switches / cache sync - mid-flight switches crash kernels
+    'SwitchVirtualAddressSpace', 'SwitchAliasMap',
+    'SyncContext', 'SyncContextEx',
+    'CommitPatch', 'MapImagePages',
+
+    # Power / hibernation / shutdown
+    'EnterSleepState', 'NotifyStandbyTransition', 'PrepareForHibernate',
+    'NotifyPartitionEvent',
+
+    # Hypervisor / microcode / watchdog - host-level impact possible
+    'DisableHypervisor', 'UpdateMicrocode', 'SetHwWatchdogConfig',
+    'InvokeHypervisorDebugger', 'ResetDebugSession',
+
+    # Device-passthrough teardown
+    'DetachDevice', 'DeleteDeviceDomain', 'DetachDeviceDomain',
+    'DeleteDevicePrQueue', 'DeleteCpuGroup',
+
+    # SNP/isolated-pages (only meaningful on AMD SEV-SNP, can hang otherwise)
+    'ImportIsolatedPages', 'CompletePendingIsolatedPagesImport',
+    'CompleteIsolatedImport', 'IssueSnpPspGuestRequest',
+    'IssueNestedSnpPspRequests', 'CompleteSnpPspRequests',
+
+    # IPT trace control
+    'ControlHypervisorIptTrace', 'CreateIptBuffers', 'DeleteIptBuffers'
+)
+
+
+function Test-IsDangerousHypercall {
+    # Return $true if the Example-* function name maps to a known-dangerous hypercall.
+    param([string]$FunctionName)
+    $bareName = $FunctionName -replace '^Example-Hv(Ext)?Call', ''
+    return ($script:DangerousHypercalls -contains $bareName)
+}
+
+
+function Invoke-HypercallBatch {
+    # Run a list of Example-* functions, collect Ok/Fail results.
+    param(
+        [object[]]$Functions,
+        [string]$VmName,
+        [System.Collections.Generic.List[PSCustomObject]]$Results
+    )
+    foreach ($fn in $Functions) {
+        try {
+            $r = & $fn.Name -VmName $VmName
+            $ok = if ($null -eq $r) { $false }
+                  elseif ($r -is [hashtable] -and $null -ne $r['Ok']) { $r.Ok }
+                  elseif ($r.PSObject.Properties['Ok']) { $r.Ok }
+                  elseif ($r.PSObject.Properties['ReadOk']) { $r.ReadOk }
+                  else { $false }
+        } catch {
+            $ok = $false
+            Write-Host ("  [EXCEPTION] {0}: {1}" -f $fn.Name, $_.Exception.Message) -ForegroundColor Red
+        }
+        $Results.Add([PSCustomObject]@{ Name = $fn.Name; Ok = $ok })
+    }
+}
+
+
 function Invoke-AllHvExamples {
     <#
     .SYNOPSIS
     Run all hypercall examples and print summary table.
+
+    .DESCRIPTION
+    Runs the safe (info / query / read) hypercall examples first, then prints
+    a warning banner and runs the known-dangerous ones (defined in
+    $script:DangerousHypercalls — partition lifecycle, VTL transitions, memory
+    ownership, power transitions, microcode/watchdog, etc). This way the user
+    sees the bulk results before any guest-crashing call fires, and can Ctrl+C
+    between batches.
     .EXAMPLE
     . .\Hvlib-HvExamples.ps1
     Invoke-AllHvExamples -VmName "Windows Server 2025"
@@ -3688,27 +3834,30 @@ function Invoke-AllHvExamples {
         return
     }
 
-    # Collect all Example-HvCall* and Example-HvExtCall* functions
-    $fns = Get-Command -Name "Example-HvCall*", "Example-HvExtCall*" -CommandType Function |
-        Sort-Object Name
+    # Collect all Example-HvCall* and Example-HvExtCall* functions, then split
+    # into safe vs dangerous batches. Each batch is sorted alphabetically.
+    $allFns = Get-Command -Name "Example-HvCall*", "Example-HvExtCall*" -CommandType Function | Sort-Object Name
+    $safeFns      = @($allFns | Where-Object { -not (Test-IsDangerousHypercall $_.Name) })
+    $dangerousFns = @($allFns | Where-Object {       (Test-IsDangerousHypercall $_.Name) })
 
-    Write-Host ("  Total example functions: {0}`n" -f $fns.Count) -ForegroundColor Cyan
+    Write-Host ("  Total: {0}  (safe: {1}, dangerous: {2})`n" -f $allFns.Count, $safeFns.Count, $dangerousFns.Count) -ForegroundColor Cyan
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-    foreach ($fn in $fns) {
-        try {
-            $r = & $fn.Name -VmName $VmName
-            $ok = if ($null -eq $r) { $false }
-                  elseif ($r -is [hashtable] -and $null -ne $r['Ok']) { $r.Ok }
-                  elseif ($r.PSObject.Properties['Ok']) { $r.Ok }
-                  elseif ($r.PSObject.Properties['ReadOk']) { $r.ReadOk }
-                  else { $false }
-        } catch {
-            $ok = $false
-            Write-Host ("  [EXCEPTION] {0}: {1}" -f $fn.Name, $_.Exception.Message) -ForegroundColor Red
-        }
-        $results.Add([PSCustomObject]@{ Name = $fn.Name; Ok = $ok })
+    # --- Phase A: safe hypercalls ---
+    Invoke-HypercallBatch -Functions $safeFns -VmName $VmName -Results $results
+
+    # --- Phase B: dangerous hypercalls (after warning banner) ---
+    if ($dangerousFns.Count -gt 0) {
+        Write-Host "`n$('!' * 80)" -ForegroundColor Yellow
+        Write-Host (" WARNING: about to run {0} dangerous hypercall examples." -f $dangerousFns.Count) -ForegroundColor Yellow
+        Write-Host " These can crash / hang the guest VM, change VTL protections, modify" -ForegroundColor Yellow
+        Write-Host " memory mappings, or trigger power-state transitions. Press Ctrl+C" -ForegroundColor Yellow
+        Write-Host " within 5 seconds to abort. They run with dummy/zero inputs, so most" -ForegroundColor Yellow
+        Write-Host " return BAD_INPUT errors - but a few may take effect." -ForegroundColor Yellow
+        Write-Host "$('!' * 80)`n" -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+        Invoke-HypercallBatch -Functions $dangerousFns -VmName $VmName -Results $results
     }
 
     # Summary
@@ -3730,15 +3879,86 @@ function Invoke-AllHvExamples {
 #endregion
 
 
-# --- Auto-run (skipped when the file is dot-sourced) ---
-if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-AllHvExamples -DllPath $script:DllPath -VmName $script:VmName
+# ==============================================================================
+# region Focused real-address test for HvCallReadGpa
+# ==============================================================================
+
+function Test-HvCallReadGpaRealAddresses {
+    <#
+    .SYNOPSIS
+        Demonstrate HvCallReadGpa against 3 real kernel-base addresses.
+    .DESCRIPTION
+        Uses $ctx.KernelBase (HvddKernelBase, already known) plus a small set
+        of byte offsets to read three real pages from the running ntoskrnl
+        image. No symbol resolution -> no PDB download -> never hangs.
+
+        Symbol-based lookups (Get-HvlibSymbolAddressDirect for nt!KeBugCheckEx
+        etc.) used to live here, but PDB download from the Microsoft symbol
+        server blocks indefinitely on offline / cache-empty hosts. Section 14
+        demos in Hvlib-Examples.ps1 still do symbol-based lookups for
+        round-trip illustration; this smoke test stays symbol-free.
+    #>
+    param([string]$VmName = $script:VmName)
+
+    Write-Host "`n--- HvCallReadGpa: real-address smoke test ---" -ForegroundColor Cyan
+    $ctx = Open-TestPartition $VmName
+    if (-not $ctx) { return }
+    if (-not $ctx.KernelBase -or $ctx.KernelBase -eq 0) {
+        Write-Host "  KernelBase unavailable - cannot run smoke test" -ForegroundColor Yellow
+        Close-HvlibPartition -handle $ctx.Handle
+        return
+    }
+
+    # Three offsets within ntoskrnl image: PE header (MZ at +0), .text start
+    # (typical +0x1000 page), and a deeper page. Each maps to a real running
+    # kernel address - good enough to prove ReadGpa actually returns data.
+    $offsets = @(
+        @{ Name = 'KernelBase+0x0000 (MZ header)'; Offset = [uint64]0x0000 },
+        @{ Name = 'KernelBase+0x1000 (.text page)'; Offset = [uint64]0x1000 },
+        @{ Name = 'KernelBase+0x2000 (.text+2)';    Offset = [uint64]0x2000 }
+    )
+
+    foreach ($entry in $offsets) {
+        $va  = $ctx.KernelBase + $entry.Offset
+        $gpa = [uint64]0
+        try { $gpa = [uint64](Get-HvlibPhysicalAddress -PartitionHandle $ctx.Handle -VirtualAddress $va) } catch {}
+        if ($gpa -eq 0) {
+            Write-Host ("  {0,-34} VA=0x{1:X16}  GPA translation failed" -f $entry.Name, $va) -ForegroundColor Yellow
+            continue
+        }
+        $r = Invoke-HvCallReadGpa -PartitionId $ctx.PartitionId -BaseGpa $gpa -ByteCount 16
+        if ($r.Ok) {
+            $hex = ($r.Data | ForEach-Object { "{0:X2}" -f $_ }) -join ' '
+            Write-Host ("  {0,-34} VA=0x{1:X16}  GPA=0x{2:X12}  bytes={3}" -f $entry.Name, $va, $gpa, $hex) -ForegroundColor Green
+        } else {
+            Write-Host ("  {0,-34} VA=0x{1:X16}  GPA=0x{2:X12}  ReadGpa FAILED (AccessResult=0x{3:X})" -f $entry.Name, $va, $gpa, $r.AccessResult) -ForegroundColor Red
+        }
+    }
+    Close-HvlibPartition -handle $ctx.Handle
 }
 
+#endregion
 
-# --- Cleanup: release native partition handles and reset Hvlib state.
-# NOTE: hvlibdotnet.dll stays loaded in the process (Add-Type cannot be
-# undone in default AssemblyLoadContext) - a fresh pwsh session is required
-# to pick up a rebuilt DLL. The guard skips silently if Hvlib module is not
-# loaded in this scope (e.g. script aborted before Get-Hvlib).
-if (Get-Command Close-Hvlib -ErrorAction SilentlyContinue) { Close-Hvlib | Out-Null }
+
+# ==============================================================================
+# Auto-run when this file is the entry point. Skipped when another script (e.g.
+# Hvlib-Examples.ps1) loads us only for the function definitions and sets
+# $script:HvExamples_SkipAutoRun = $true before the load.
+# ==============================================================================
+if (-not $script:HvExamples_SkipAutoRun) {
+    try {
+        # Quick focused smoke test first - real symbols + HvCallReadGpa - so
+        # you see meaningful output even if the full 222-call sweep is slow.
+        Test-HvCallReadGpaRealAddresses -VmName $script:VmName
+
+        Invoke-AllHvExamples -DllPath $script:DllPath -VmName $script:VmName
+    }
+    finally {
+        # Cleanup: release native partition handles and reset Hvlib state.
+        # NOTE: hvlibdotnet.dll stays loaded in the process (Add-Type cannot be
+        # undone in default AssemblyLoadContext) - a fresh pwsh session is
+        # required to pick up a rebuilt DLL. The guard skips silently if Hvlib
+        # module is not loaded in this scope (e.g. script aborted before Get-Hvlib).
+        if (Get-Command Close-Hvlib -ErrorAction SilentlyContinue) { Close-Hvlib | Out-Null }
+    }
+}
