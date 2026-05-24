@@ -3896,15 +3896,15 @@ function Test-HvCallReadGpaRealAddresses {
         etc.) used to live here, but PDB download from the Microsoft symbol
         server blocks indefinitely on offline / cache-empty hosts. Section 14
         demos in Hvlib-Examples.ps1 still do symbol-based lookups for
-        round-trip illustration; this smoke test stays symbol-free.
+        round-trip illustration; this quick check stays symbol-free.
     #>
     param([string]$VmName = $script:VmName)
 
-    Write-Host "`n--- HvCallReadGpa: real-address smoke test ---" -ForegroundColor Cyan
+    Write-Host "`n--- HvCallReadGpa: real-address quick check ---" -ForegroundColor Cyan
     $ctx = Open-TestPartition $VmName
     if (-not $ctx) { return }
     if (-not $ctx.KernelBase -or $ctx.KernelBase -eq 0) {
-        Write-Host "  KernelBase unavailable - cannot run smoke test" -ForegroundColor Yellow
+        Write-Host "  KernelBase unavailable - cannot run quick check" -ForegroundColor Yellow
         Close-HvlibPartition -handle $ctx.Handle
         return
     }
@@ -3947,8 +3947,8 @@ function Test-HvCallReadGpaRealAddresses {
 # ==============================================================================
 if (-not $script:HvExamples_SkipAutoRun) {
     try {
-        # Quick focused smoke test first - real symbols + HvCallReadGpa - so
-        # you see meaningful output even if the full 222-call sweep is slow.
+        # Quick focused check first - real kernel-base offsets + HvCallReadGpa -
+        # so you see meaningful output even if the full 222-call sweep is slow.
         Test-HvCallReadGpaRealAddresses -VmName $script:VmName
 
         Invoke-AllHvExamples -DllPath $script:DllPath -VmName $script:VmName
